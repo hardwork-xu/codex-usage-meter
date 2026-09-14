@@ -1,0 +1,1 @@
+PyYAML 6.0.3, installed from PyPI. Pure Python modules only. Used only for the unmodified Codex plugin validator during user-run installation. The meter runtime does not depend on it. License: MIT, see PyYAML-LICENSE.

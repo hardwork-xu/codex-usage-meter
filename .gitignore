@@ -1,0 +1,32 @@
+# Local development and runtime data; never release task logs or account snapshots.
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+work/
+data/
+dev-data/
+local-data/
+registry.json
+quota.json
+endpoint.json
+settings.json
+titles.json
+*.jsonl
+*.log
+*.lock
+*.tmp
+*.zip
+.env
+.env.*
+.codex/
+
+# Real local screenshots and validation notes are not publication assets.
+面板预览.png
+验证记录.md
+screenshots/
+recordings/

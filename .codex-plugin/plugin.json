@@ -1,0 +1,28 @@
+{
+  "name": "codex-usage-meter",
+  "version": "0.4.0",
+  "description": "本地记录 Codex 每题 Token、官方额度，按官方费率估算 credits 与自定义货币金额",
+  "author": {
+    "name": "Codex Usage Meter contributors"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "用量计",
+    "shortDescription": "看清每道问题消耗了多少 Token",
+    "longDescription": "通过官方 Hooks 提供的本地记录统计每题用量，读取官方额度，按模型与 Token 类别估算 credits 并换算自定义货币。",
+    "developerName": "Codex Usage Meter contributors",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "打开用量计",
+      "查看每次提问的 Token 消耗"
+    ],
+    "brandColor": "#18766A"
+  },
+  "mcpServers": "./.mcp.json",
+  "keywords": [
+    "usage",
+    "tokens",
+    "local"
+  ]
+}
