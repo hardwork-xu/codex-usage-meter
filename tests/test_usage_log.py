@@ -3,10 +3,12 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 SPEC = importlib.util.spec_from_file_location("usage_log", Path(__file__).resolve().parents[1] / "scripts" / "usage_log.py")
 usage_log = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(usage_log)
@@ -210,10 +212,11 @@ class UsageLogTests(unittest.TestCase):
         ])
         encoded = json.dumps(result)
         self.assertNotIn(secret, encoded)
-        self.assertEqual(set(result), {"threadId", "turns", "warnings", "sourceNote"})
+        self.assertEqual(set(result), {"threadId", "turns", "warnings", "sourceNote", "reading", "identityVerified", "conversationMetadata"})
         self.assertEqual(set(result["turns"][0]), {
             "id", "threadId", "startedAt", "endedAt", "status", "quality", "note", "tokens",
             "model", "serviceTier", "pricingMetadataStatus",
+            "dailyUsage", "undatedTokens",
         })
 
     def test_unknown_completion_does_not_hijack_active_turn(self):
@@ -373,7 +376,7 @@ class UsageLogTests(unittest.TestCase):
         with self.assertRaises(usage_log.UsageLogError):
             usage_log.read_usage_log(link, THREAD)
 
-    def test_nonregular_suffix_and_size_are_rejected(self):
+    def test_nonregular_path_and_suffix_are_rejected(self):
         self.path.write_text(json.dumps(META) + "\n")
         directory = Path(self.temp.name) / "folder.jsonl"
         directory.mkdir()
@@ -381,10 +384,6 @@ class UsageLogTests(unittest.TestCase):
             usage_log.read_usage_log(directory, THREAD)
         with self.assertRaises(usage_log.UsageLogError):
             usage_log.read_usage_log(Path(self.temp.name) / "usage.txt", THREAD)
-        with self.path.open("wb") as stream:
-            stream.truncate(usage_log.MAX_LOG_BYTES + 1)
-        with self.assertRaises(usage_log.UsageLogError):
-            usage_log.read_usage_log(self.path, THREAD)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,24 @@ def named(request_id, thread_id, name, **extra):
 
 
 class TitleTests(unittest.TestCase):
+    def test_source_metadata_is_allowlisted_and_does_not_export_private_fields(self):
+        result = conversations.source_metadata({"source": {"subagent": {"thread_spawn": {
+            "parent_thread_id": "synthetic-parent", "agent_path": "/root/synthetic_worker",
+            "agent_nickname": "Example", "instructions": "DO NOT EXPORT"}}},
+            "cwd": "DO NOT EXPORT", "preview": "DO NOT EXPORT"})
+        self.assertEqual(result, {"sourceType": "subagent", "parentThreadId": "synthetic-parent", "agentLabel": "synthetic_worker"})
+        self.assertNotIn("DO NOT EXPORT", json.dumps(result))
+
+    def test_unknown_source_and_invalid_agent_paths_do_not_create_labels(self):
+        self.assertEqual(conversations.source_metadata({"source": "vscode"})["sourceType"], "main")
+        for source in (None, "future-source", [], {}):
+            self.assertEqual(conversations.source_metadata({"source": source})["sourceType"], "unknown")
+        for path in ("/Users/private/folder", "/root/../private", "/root/a\nprivate"):
+            result = conversations.source_metadata({"source": {"subagent": {"thread_spawn": {
+                "parent_thread_id": "bad id", "agent_path": path}}}})
+            self.assertIsNone(result["parentThreadId"])
+            self.assertIsNone(result["agentLabel"])
+
     def test_title_normalization_removes_controls_and_bounds_length(self):
         self.assertEqual(conversations.normalize_title(" \t 课程\n\x00 笔记\u202e \r "), "课程 笔记")
         self.assertEqual(conversations.normalize_title("标题" * 100), ("标题" * 60))

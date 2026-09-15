@@ -1,7 +1,7 @@
 {
   "name": "codex-usage-meter",
-  "version": "0.5.0",
-  "description": "本地记录 Codex 每题 Token、官方额度，按官方费率估算 credits 与自定义货币金额",
+  "version": "0.6.0",
+  "description": "查看 Codex 每题、当天与订阅周期 Token，区分主子任务，估算 credits 与货币价值",
   "author": {
     "name": "Codex Usage Meter contributors"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "用量计",
     "shortDescription": "看清每道问题消耗了多少 Token",
-    "longDescription": "通过官方 Hooks 提供的本地记录统计每题用量，读取官方额度，按模型与 Token 类别估算 credits 并换算自定义货币。",
+    "longDescription": "通过官方 Hooks 提供的本地记录统计每题、当天与订阅周期用量，区分主子任务，读取官方额度，按模型与 Token 类别估算 credits 并换算货币。",
     "developerName": "Codex Usage Meter contributors",
     "category": "Productivity",
     "capabilities": [],

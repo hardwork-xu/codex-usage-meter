@@ -8,19 +8,26 @@ quota or automatically aggregated child-agent usage.
 
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
 import stat
+import threading
+import time
 from datetime import datetime
 from typing import Any
 
+from conversations import source_metadata
 
-MAX_LOG_BYTES = 128 * 1024 * 1024
+
+MAX_READ_BYTES = 16 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_PENDING_CONTEXTS = 128
+MAX_RECORDS_PER_READ = 50_000
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _COUNTERS = (
     ("total_tokens", "total"),
@@ -54,6 +61,19 @@ def _timestamp(value: Any) -> float | int | None:
             return None
         seconds = parsed.timestamp()
         return seconds if 0 <= seconds <= 253402300799 else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _empty_tokens() -> dict[str, int]:
+    return {target: 0 for _, target in _COUNTERS}
+
+
+def _local_day(timestamp: float | int | None) -> str | None:
+    if timestamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp).date().isoformat()
     except (ValueError, OverflowError, OSError):
         return None
 
@@ -136,6 +156,8 @@ class _Turn:
         self.status = "running" if started else "completed"
         self.started = started
         self.tokens: dict[str, int] | None = None
+        self.daily_usage: dict[str, dict[str, int]] = {}
+        self.undated_tokens = _empty_tokens()
         self.reasons: list[str] = []
         self.pricing = _PricingMetadata()
         if not started:
@@ -145,12 +167,17 @@ class _Turn:
         if reason not in self.reasons:
             self.reasons.append(reason)
 
-    def add(self, amount: dict[str, int]) -> None:
+    def add(self, amount: dict[str, int], timestamp: float | int | None) -> None:
         if self.tokens is None:
             self.tokens = dict(amount)
         else:
             for key, value in amount.items():
                 self.tokens[key] += value
+        if any(amount.values()):
+            day = _local_day(timestamp)
+            bucket = self.daily_usage.setdefault(day, _empty_tokens()) if day is not None else self.undated_tokens
+            for key, value in amount.items():
+                bucket[key] += value
 
     def export(self) -> dict[str, Any]:
         reasons = list(self.reasons)
@@ -171,7 +198,9 @@ class _Turn:
             "status": self.status,
             "quality": "unavailable" if self.tokens is None else ("partial" if reasons else "complete"),
             "note": note,
-            "tokens": self.tokens,
+            "tokens": dict(self.tokens) if self.tokens is not None else None,
+            "dailyUsage": {day: dict(tokens) for day, tokens in self.daily_usage.items()},
+            "undatedTokens": dict(self.undated_tokens),
             **self.pricing.export(),
         }
 
@@ -180,6 +209,7 @@ class _Reader:
     def __init__(self, expected_thread_id: str):
         self.thread_id = expected_thread_id
         self.verified = False
+        self.source_metadata = {}
         self.turns: dict[str, _Turn] = {}
         self.active: _Turn | None = None
         self.previous_total: dict[str, int] | None = None
@@ -208,6 +238,7 @@ class _Reader:
             if not isinstance(payload, dict) or payload.get("id") != self.thread_id:
                 raise UsageLogError("用量记录与指定任务不匹配。")
             self.verified = True
+            self.source_metadata = source_metadata(payload)
             return
         if kind == "turn_context":
             if not self.verified:
@@ -235,7 +266,7 @@ class _Reader:
         elif event in {"task_complete", "turn_aborted"}:
             self.finish(payload, timestamp, interrupted=event == "turn_aborted")
         elif event == "token_count":
-            self.usage(payload)
+            self.usage(payload, timestamp)
 
     def context(self, payload: dict[str, Any]) -> None:
         # Deliberately select only these three context fields. In particular,
@@ -310,7 +341,7 @@ class _Reader:
         if self.active is turn:
             self.active = None
 
-    def usage(self, payload: dict[str, Any]) -> None:
+    def usage(self, payload: dict[str, Any], timestamp: float | int | None) -> None:
         info = payload.get("info")
         if info is None:
             # Quota-only notifications can carry null info. It is not zero usage.
@@ -344,27 +375,27 @@ class _Reader:
             self.warn("已排除无法归属到进行中轮次的用量。")
         elif repeated:
             if self.baseline_valid:
-                turn.add({key: 0 for key in total})
+                turn.add({key: 0 for key in total}, timestamp)
             else:
                 turn.mark("缺少完整的起始 token 基线。")
         elif self.baseline_valid and self.previous_total is not None:
             amount = _delta(total, self.previous_total)
             if amount is not None:
-                turn.add(amount)
+                turn.add(amount, timestamp)
             else:
                 turn.mark("token 计数重置或变化异常，用量可能不完整。")
                 self.warn("检测到 token 计数重置或差值异常。")
                 fallback = _bounded_last(last, total)
                 if fallback is not None:
-                    turn.add(fallback)
+                    turn.add(fallback, timestamp)
         else:
             fallback = _bounded_last(last, total)
             if fallback is not None and total == fallback and turn.started:
-                turn.add(fallback)
+                turn.add(fallback, timestamp)
             else:
                 turn.mark("缺少完整起始基线，仅统计已观察到的增量。")
                 if fallback is not None:
-                    turn.add(fallback)
+                    turn.add(fallback, timestamp)
         self.previous_total = total
         self.baseline_valid = True
 
@@ -373,82 +404,215 @@ class _Reader:
             raise UsageLogError("用量记录中缺少匹配的任务身份。")
         return {
             "threadId": self.thread_id,
+            "identityVerified": self.verified,
+            "conversationMetadata": dict(self.source_metadata),
             "turns": [turn.export() for turn in self.turns.values()],
-            "warnings": self.warnings,
+            "warnings": list(self.warnings),
             "sourceNote": _SOURCE_NOTE,
         }
 
 
-def read_usage_log(path: str | os.PathLike[str], expected_thread_id: str) -> dict[str, Any]:
-    """Read exactly one caller-supplied file and return sanitized usage summaries.
+def _ordinary_leaf(details):
+    return (stat.S_ISREG(details.st_mode) and
+            not getattr(details, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
-    Invalid paths, foreign session IDs, and oversized files raise UsageLogError.
-    A missing/invalid counter yields a partial result, never invented zero usage.
-    ISO timestamps are converted to Unix seconds. Symlink leaf paths are refused.
+
+class UsageLogReader:
+    """Incrementally read one exact path, retaining only sanitized statistics.
+
+    Each call reads at most ``byte_budget`` bytes, including bounded integrity
+    checks, and processes at most 50,000 records. No raw JSON or unfinished line
+    is retained between calls. An unfinished line is reread from its offset once
+    the file changes. A complete JSON value without a newline is not committed.
+
+    File identity, size and bounded prefix/cursor digests detect replacement and
+    common in-place rewrites, including truncate-and-regrow. Arbitrary edits in
+    an already-read middle region cannot be detected without rereading history;
+    the documented local adapter expects an append-only active log.
     """
-    if _identifier(expected_thread_id) is None:
-        raise UsageLogError("需要有效的任务编号。")
-    try:
-        file_path = Path(path)
-    except (TypeError, ValueError):
-        raise UsageLogError("需要用量记录的文件路径。") from None
-    if file_path.suffix.lower() != ".jsonl":
-        raise UsageLogError("用量记录必须是 JSONL 文件。")
-    def ordinary_leaf(details):
-        return (stat.S_ISREG(details.st_mode) and
-                not getattr(details, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
-    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
-             getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
-    try:
-        original = file_path.lstat()
-        if not ordinary_leaf(original):
-            raise UsageLogError("用量记录路径必须指向普通文件，不能是链接。")
-        descriptor = os.open(file_path, flags)
-    except (OSError, ValueError):
-        raise UsageLogError("无法打开指定的用量记录文件。") from None
-    reader = _Reader(expected_thread_id)
-    try:
-        with os.fdopen(descriptor, "rb") as stream:
-            details = os.fstat(stream.fileno())
-            current = file_path.lstat()
-            identity = (details.st_dev, details.st_ino)
-            if (not ordinary_leaf(details) or not ordinary_leaf(current) or
-                    identity != (original.st_dev, original.st_ino) or
-                    identity != (current.st_dev, current.st_ino)):
-                raise UsageLogError("用量记录路径必须指向普通文件。")
-            if details.st_size > MAX_LOG_BYTES:
-                raise UsageLogError("用量记录超过 128 MiB 的读取上限。")
-            bytes_read = 0
-            while True:
-                raw = stream.readline(MAX_LINE_BYTES + 1)
-                if not raw:
-                    break
-                bytes_read += len(raw)
-                if bytes_read > MAX_LOG_BYTES:
-                    raise UsageLogError("用量记录超过 128 MiB 的读取上限。")
-                if len(raw) > MAX_LINE_BYTES:
-                    while raw and not raw.endswith(b"\n"):
-                        raw = stream.readline(MAX_LINE_BYTES + 1)
-                        bytes_read += len(raw)
-                        if bytes_read > MAX_LOG_BYTES:
-                            raise UsageLogError("用量记录超过 128 MiB 的读取上限。")
-                    reader.gap("已跳过过大的单条记录，用量可能不完整。")
-                    continue
-                if not raw.strip():
-                    continue
-                try:
-                    record = json.loads(raw)
-                except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
-                    if not raw.endswith(b"\n"):
-                        reader.gap("末条记录尚未写完，请稍后刷新。")
+    def __init__(self, expected_thread_id: str, *, byte_budget: int = MAX_READ_BYTES):
+        if _identifier(expected_thread_id) is None:
+            raise UsageLogError("需要有效的任务编号。")
+        self._thread_id = expected_thread_id
+        self._line_limit = MAX_LINE_BYTES
+        self._anchor_bytes = min(4096, max(1, self._line_limit // 8))
+        minimum = self._line_limit + 1 + 2 * self._anchor_bytes
+        if isinstance(byte_budget, bool) or not isinstance(byte_budget, int) or not minimum <= byte_budget <= MAX_READ_BYTES:
+            raise ValueError("单次读取预算必须足够容纳一条记录及完整性检查，且不能超过 16 MiB。")
+        self._byte_budget = byte_budget
+        self._lock = threading.Lock()
+        self._reset(None, None)
+
+    def _reset(self, path, identity):
+        self._path = path
+        self._identity = identity
+        self._reader = _Reader(self._thread_id)
+        self._offset = 0
+        self._observed_size = None
+        self._mtime_ns = None
+        self._prefix = None
+        self._tail = None
+        self._skipping = False
+        self._waiting_at_end = False
+        self._failure = None
+
+    def _remember_tail(self, raw):
+        tail = raw[-self._anchor_bytes:]
+        self._tail = (self._offset - len(tail), len(tail), hashlib.sha256(tail).digest())
+
+    def _poison(self, message):
+        self._failure = message
+        # Never return cached totals after discovering a foreign session later.
+        self._reader = _Reader(self._thread_id)
+        raise UsageLogError(message)
+
+    def _result(self, file_bytes):
+        complete = self._offset == file_bytes and not self._skipping and not self._waiting_at_end
+        if complete and not self._reader.verified:
+            # A newly-created file may receive its first metadata on the next
+            # append. Absence is not affirmative evidence of a foreign session.
+            raise UsageLogError("用量记录中缺少匹配的任务身份。")
+        result = (self._reader.result() if self._reader.verified else
+                  {"threadId": self._thread_id, "identityVerified": False, "conversationMetadata": {},
+                   "turns": [], "warnings": [], "sourceNote": _SOURCE_NOTE})
+        result = deepcopy(result)
+        result["reading"] = {"complete": complete, "bytesRead": self._offset, "fileBytes": file_bytes}
+        if not complete:
+            note = ("末条记录尚未写完，请稍后刷新。" if self._waiting_at_end else
+                    "正在分批读取历史用量，当前统计尚不完整。")
+            result["warnings"].append(note)
+            for turn in result["turns"]:
+                turn["readingIncomplete"] = True
+                if turn["tokens"] is not None:
+                    turn["quality"] = "partial"
+                turn["note"] = note + " " + turn["note"]
+        return result
+
+    def read(self, path: str | os.PathLike[str]) -> dict[str, Any]:
+        with self._lock:
+            return self._read(path)
+
+    def _read(self, path):
+        try:
+            file_path = Path(path).expanduser().absolute()
+        except (TypeError, ValueError):
+            raise UsageLogError("需要用量记录的文件路径。") from None
+        if file_path.suffix.lower() != ".jsonl":
+            raise UsageLogError("用量记录必须是 JSONL 文件。")
+        path_key = os.path.normcase(str(file_path))
+        if path_key != self._path:
+            self._reset(path_key, None)
+        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        try:
+            original = file_path.lstat()
+            if not _ordinary_leaf(original):
+                raise UsageLogError("用量记录路径必须指向普通文件，不能是链接。")
+            descriptor = os.open(file_path, flags)
+        except (OSError, ValueError):
+            raise UsageLogError("无法打开指定的用量记录文件。") from None
+        try:
+            with os.fdopen(descriptor, "rb") as stream:
+                details = os.fstat(stream.fileno())
+                current = file_path.lstat()
+                identity = (details.st_dev, details.st_ino)
+                if (not _ordinary_leaf(details) or not _ordinary_leaf(current) or
+                        identity != (original.st_dev, original.st_ino) or
+                        identity != (current.st_dev, current.st_ino)):
+                    raise UsageLogError("用量记录路径必须指向普通文件。")
+                size, stamp = details.st_size, details.st_mtime_ns
+                if (identity != self._identity or
+                        self._observed_size is not None and
+                        (size < self._observed_size or
+                         size == self._observed_size and stamp != self._mtime_ns and not self._failure)):
+                    self._reset(path_key, identity)
+
+                unchanged = size == self._observed_size and stamp == self._mtime_ns
+                if unchanged and self._failure:
+                    raise UsageLogError(self._failure)
+                if unchanged and (self._offset == size or self._waiting_at_end):
+                    return self._result(size)
+
+                spent = 0
+                # Store only digests, never the checked raw prefix/cursor bytes.
+                prefix = stream.read(min(size, self._anchor_bytes))
+                spent += len(prefix)
+                rewritten = (self._prefix is not None and
+                             hashlib.sha256(prefix[:self._prefix[0]]).digest() != self._prefix[1])
+                if self._tail is not None and not rewritten:
+                    start, length, digest = self._tail
+                    stream.seek(start)
+                    anchor = stream.read(length)
+                    spent += len(anchor)
+                    rewritten = hashlib.sha256(anchor).digest() != digest
+                if rewritten:
+                    self._reset(path_key, identity)
+                self._prefix = (len(prefix), hashlib.sha256(prefix).digest())
+                self._observed_size, self._mtime_ns = size, stamp
+                if self._failure:
+                    raise UsageLogError(self._failure)
+
+                stream.seek(self._offset)
+                self._waiting_at_end = False
+                deadline = time.monotonic() + 1.0
+                for _ in range(MAX_RECORDS_PER_READ):
+                    if self._offset >= size or spent >= self._byte_budget or time.monotonic() >= deadline:
                         break
-                    reader.gap("已跳过格式异常的记录，用量可能不完整。")
-                    continue
-                reader.handle(record)
-    except OSError:
-        raise UsageLogError("无法读取指定的用量记录文件。") from None
-    return reader.result()
+                    line_start = self._offset
+                    limit = min(self._byte_budget - spent, size - self._offset,
+                                64 * 1024 if self._skipping else self._line_limit + 1)
+                    raw = stream.readline(limit)
+                    spent += len(raw)
+                    if not raw:
+                        self._reset(path_key, None)
+                        raise UsageLogError("用量记录在读取时发生变化，请稍后刷新。")
+                    if self._skipping:
+                        self._offset += len(raw)
+                        self._remember_tail(raw)
+                        self._skipping = not raw.endswith(b"\n")
+                        continue
+                    if len(raw) > self._line_limit:
+                        self._reader.gap("已跳过过大的单条记录，用量可能不完整。")
+                        self._offset += len(raw)
+                        self._remember_tail(raw)
+                        self._skipping = not raw.endswith(b"\n")
+                        continue
+                    if not raw.endswith(b"\n"):
+                        # Neither parse nor cache an unfinished line. On a budget
+                        # boundary it will fit in the next call's fresh budget.
+                        self._waiting_at_end = line_start + len(raw) >= size
+                        break
+                    self._offset += len(raw)
+                    self._remember_tail(raw)
+                    if not raw.strip():
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+                        self._reader.gap("已跳过格式异常的记录，用量可能不完整。")
+                        continue
+                    try:
+                        self._reader.handle(record)
+                    except UsageLogError as exc:
+                        self._poison(str(exc))
+                if self._skipping and self._offset == size:
+                    self._waiting_at_end = True
+                final = file_path.lstat()
+                final_handle = os.fstat(stream.fileno())
+                if (not _ordinary_leaf(final) or (final.st_dev, final.st_ino) != identity or
+                        final_handle.st_size < size or
+                        final_handle.st_size == size and final_handle.st_mtime_ns != stamp):
+                    self._reset(path_key, None)
+                    raise UsageLogError("用量记录在读取时发生变化，请稍后刷新。")
+                return self._result(size)
+        except OSError:
+            raise UsageLogError("无法读取指定的用量记录文件。") from None
 
 
-__all__ = ["UsageLogError", "read_usage_log"]
+def read_usage_log(path: str | os.PathLike[str], expected_thread_id: str) -> dict[str, Any]:
+    """One bounded compatibility read; reuse UsageLogReader to finish backfill."""
+    return UsageLogReader(expected_thread_id).read(path)
+
+
+__all__ = ["UsageLogError", "UsageLogReader", "read_usage_log"]

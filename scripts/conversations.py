@@ -36,6 +36,40 @@ def normalize_title(value: Any) -> str | None:
     return title or None
 
 
+def source_metadata(payload: Any) -> dict:
+    """Allowlist identity metadata from an already verified session header.
+
+    Agent paths identify a task in the agent tree, not a filesystem location.
+    Never retain the source object, instructions, working directory or preview.
+    """
+    result = {"sourceType": "unknown", "parentThreadId": None, "agentLabel": None}
+    if not isinstance(payload, dict):
+        return result
+    source = payload.get("source")
+    if isinstance(source, str):
+        if source in {"cli", "vscode", "exec", "appServer"}:
+            result["sourceType"] = "main"
+        elif source == "subagent":
+            result["sourceType"] = "subagent"
+        return result
+    if not isinstance(source, dict) or "subagent" not in source:
+        return result
+    result["sourceType"] = "subagent"
+    subagent = source["subagent"]
+    spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+    if not isinstance(spawn, dict):
+        return result
+    parent = spawn.get("parent_thread_id")
+    if isinstance(parent, str) and _ID.fullmatch(parent):
+        result["parentThreadId"] = parent
+    path = spawn.get("agent_path")
+    if isinstance(path, str) and len(path) <= 512 and re.fullmatch(r"/root(?:/[A-Za-z0-9_-]{1,80})+", path):
+        result["agentLabel"] = path.rsplit("/", 1)[-1]
+    else:
+        result["agentLabel"] = normalize_title(spawn.get("agent_nickname"))
+    return result
+
+
 def _identifiers(values: Iterable[str], limit: int | None = None) -> list[str]:
     if isinstance(values, (str, bytes)):
         raise ValueError("需要任务编号列表。")
@@ -92,7 +126,7 @@ def fetch_conversation_titles(thread_ids: Iterable[str], codex_binary: str | os.
     try:
         with JsonRpcProcess([*prefix, "app-server", "--stdio"], timeout=RPC_TIMEOUT_SECONDS) as rpc:
             rpc.send({"id": 1, "method": "initialize", "params": {
-                "clientInfo": {"name": "codex_usage_meter_titles", "version": "0.5.0"},
+                "clientInfo": {"name": "codex_usage_meter_titles", "version": "0.6.0"},
             }})
             initialized = False
             position = 0
@@ -133,4 +167,4 @@ def fetch_conversation_titles(thread_ids: Iterable[str], codex_binary: str | os.
     return names
 
 
-__all__ = ["fetch_conversation_titles", "normalize_title", "display_ids"]
+__all__ = ["fetch_conversation_titles", "normalize_title", "display_ids", "source_metadata"]

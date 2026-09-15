@@ -24,6 +24,20 @@ def turn(thread_id, turn_id, started, ended=None, status="completed"):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_child_uses_verified_parent_name_and_preserves_alias_precedence(self):
+        metadata = {A: {"sourceType": "main"}, B: {"sourceType": "subagent", "parentThreadId": A, "agentLabel": "synthetic_worker"}}
+        records = {A: {}, B: {}}
+        rows = {row["id"]: row for row in meter.conversation_catalog(records, [], {A: "示例主任务"}, metadata)}
+        self.assertEqual(rows[B]["title"], "子任务 · synthetic_worker")
+        self.assertEqual(rows[B]["parentTitle"], "示例主任务")
+        self.assertEqual(rows[B]["parentDisplayId"], "a123456")
+        records[B]["alias"] = "自定义子任务"
+        rows = {row["id"]: row for row in meter.conversation_catalog(records, [], {}, metadata)}
+        self.assertEqual(rows[B]["title"], "自定义子任务")
+        metadata[B]["parentThreadId"] = "not-registered"
+        rows = {row["id"]: row for row in meter.conversation_catalog(records, [], {"not-registered": "不得使用"}, metadata)}
+        self.assertIsNone(rows[B]["parentTitle"])
+
     def test_turn_numbers_are_per_conversation_and_stable_under_interleaving(self):
         records = {A: {"registeredAt": 1}, B: {"registeredAt": 2}}
         source = [turn(A, "a-second", 30), turn(B, "b-second", 40),
@@ -49,7 +63,7 @@ class CatalogTests(unittest.TestCase):
         catalog = {row["id"]: row for row in meter.conversation_catalog(records, items, titles)}
         self.assertEqual((catalog[A]["title"], catalog[A]["titleSource"]), ("本地 备注", "custom"))
         self.assertEqual((catalog[B]["title"], catalog[B]["titleSource"]), ("官方名称", "official"))
-        self.assertEqual((catalog[C]["title"], catalog[C]["titleSource"]), ("对话 3", "fallback"))
+        self.assertEqual((catalog[C]["title"], catalog[C]["titleSource"]), ("未命名任务 · 654321", "fallback"))
         self.assertNotIn("unregistered", catalog)
 
     def test_counts_activity_and_order_do_not_merge_other_conversations(self):
@@ -72,16 +86,21 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(set(labels.values())), 3)
         self.assertTrue(all(len(label) >= 6 for label in labels.values()))
 
-    def test_fallback_ordinals_follow_registration_order_not_mapping_order(self):
+    def test_fallback_ids_are_stable_under_mapping_order(self):
         records = {B: {"registeredAt": 20}, A: {"registeredAt": 10}, C: {"registeredAt": 30}}
         first = {row["id"]: row["title"] for row in meter.conversation_catalog(records, [], {})}
         reordered = dict(reversed(list(records.items())))
         second = {row["id"]: row["title"] for row in meter.conversation_catalog(reordered, [], {})}
-        self.assertEqual(first, {A: "对话 1", B: "对话 2", C: "对话 3"})
+        self.assertEqual(first, {A: "未命名任务 · a123456", B: "未命名任务 · b123456", C: "未命名任务 · 654321"})
         self.assertEqual(second, first)
 
 
 class RegistryAliasTests(unittest.TestCase):
+    def test_unverified_incomplete_prefix_cannot_register(self):
+        with mock.patch.object(meter, "read_usage_log", return_value={"identityVerified": False, "turns": []}):
+            with self.assertRaises(ValueError):
+                meter.register(self.folder, self.folder / "synthetic.jsonl", A)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -132,7 +151,7 @@ class RegistryAliasTests(unittest.TestCase):
                 official = {row["id"]: row for row in meter.conversation_catalog(records, [], {A: "官方名称"})}[A]
                 self.assertEqual((official["title"], official["titleSource"]), ("官方名称", "official"))
                 fallback = {row["id"]: row for row in meter.conversation_catalog(records, [], {})}[A]
-                self.assertEqual((fallback["title"], fallback["titleSource"]), ("对话 1", "fallback"))
+                self.assertEqual((fallback["title"], fallback["titleSource"]), ("未命名任务 · a123456", "fallback"))
 
     def test_invalid_or_unknown_alias_input_does_not_change_registry(self):
         invalids = [None, [], {}, {"threadId": A}, {"threadId": A, "title": "x", "extra": True},

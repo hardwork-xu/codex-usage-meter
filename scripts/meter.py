@@ -19,8 +19,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import request, error, parse
 
-from usage_log import read_usage_log
+from usage_log import read_usage_log, UsageLogReader
 from pricing import estimate_turn
+from periods import summarize_periods
 from conversations import fetch_conversation_titles, normalize_title, display_ids
 from platform_support import default_data_dir, codex_command, file_lock, is_windows, subprocess_options
 
@@ -31,7 +32,7 @@ FX_REFERENCE = {"sourceUrl": "https://www.ecb.europa.eu/stats/policy_and_exchang
                 "date": "2026-09-14", "label": "欧洲央行参考汇率"}
 DEFAULT_SETTINGS = {"currencyName": "美元", "currencySymbol": "$", "ratePerMillion": None,
                     "pricingMode": "official", "usdPerCredit": "0.04", "currencyPerUsd": "1", "speedMode": "standard",
-                    "currencyCode": "USD", "exchangeRates": EXCHANGE_RATES}
+                    "currencyCode": "USD", "exchangeRates": EXCHANGE_RATES, "subscriptionRenewalDay": None}
 EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SubagentStop", "SubagentStart"}
 
 
@@ -79,6 +80,8 @@ def register(folder, path, thread_id):
     """Only the exact caller-provided log. No discovery or recursive scanning."""
     path = Path(path).expanduser().absolute()
     result = read_usage_log(path, thread_id)
+    if result.get("identityVerified") is not True:
+        raise ValueError("尚未核实这份记录的任务编号，请稍后重试")
     with locked(folder):
         records = read_json(folder / "registry.json", {})
         if not isinstance(records, dict):
@@ -113,24 +116,39 @@ def set_conversation_label(folder, value):
     return {"ok": True}
 
 
-def conversation_catalog(records, turns, titles):
+def conversation_catalog(records, turns, titles, metadata=None):
     """Attach names, collision-free short IDs and per-conversation turn numbers."""
     ids = [key for key, value in records.items() if isinstance(key, str) and isinstance(value, dict)]
     ids.sort(key=lambda key: (records[key].get("registeredAt")
                              if isinstance(records[key].get("registeredAt"), (int, float)) else 0, key))
     tags = display_ids(ids)
-    catalog = []
-    for index, thread_id in enumerate(ids, 1):
-        record = records[thread_id]
-        alias = normalize_title(record.get("alias"))
+    metadata = metadata or {}
+    names = {}
+    for thread_id in ids:
+        alias = normalize_title(records[thread_id].get("alias"))
         official = normalize_title(titles.get(thread_id))
-        title = alias or official or "对话 " + str(index)
+        info = metadata.get(thread_id, {})
+        child = info.get("sourceType") == "subagent"
+        label = normalize_title(info.get("agentLabel"))
+        fallback = ("子任务 · " + (label or tags[thread_id])) if child else "未命名任务 · " + tags[thread_id]
+        names[thread_id] = (alias or official or fallback, "custom" if alias else "official" if official else "fallback")
+    catalog = []
+    for thread_id in ids:
+        title, title_source = names[thread_id]
+        info = metadata.get(thread_id, {})
+        source_type = info.get("sourceType", "unknown")
+        parent = info.get("parentThreadId") if source_type == "subagent" else None
+        if parent == thread_id:
+            parent = None
         items = sorted((turn for turn in turns if turn.get("threadId") == thread_id),
                        key=lambda item: (item.get("startedAt") or 0, item.get("id") or ""))
         for number, turn in enumerate(items, 1):
             turn.update(conversationTitle=title, conversationDisplayId=tags[thread_id], turnNumber=number)
         catalog.append({"id": thread_id, "title": title, "displayId": tags[thread_id],
-                        "titleSource": "custom" if alias else "official" if official else "fallback",
+                        "titleSource": title_source, "sourceType": source_type,
+                        "parentThreadId": parent, "parentTitle": names.get(parent, (None,))[0],
+                        "parentDisplayId": tags.get(parent) if parent else None,
+                        "agentLabel": info.get("agentLabel"),
                         "activeTurnCount": sum(turn.get("status") == "running" for turn in items),
                         "turnCount": len(items),
                         "lastActivityAt": max((turn.get("endedAt") or turn.get("startedAt") or 0 for turn in items), default=0)})
@@ -151,7 +169,7 @@ def fetch_quota():
     try:
         with JsonRpcProcess([*codex_command(), "app-server", "--stdio"], timeout=20) as rpc:
             rpc.send({"id": 1, "method": "initialize", "params": {
-                "clientInfo": {"name": "codex_usage_meter", "version": "0.5.0"}}})
+                "clientInfo": {"name": "codex_usage_meter", "version": "0.6.0"}}})
             initialized = False
             for response in rpc.responses():
                 request_id = response.get("id")
@@ -216,6 +234,10 @@ def validate_settings(value):
     if not isinstance(value, dict) or set(value) - set(DEFAULT_SETTINGS):
         raise ValueError("设置字段无效")
     out = {}
+    renewal_day = value.get("subscriptionRenewalDay")
+    if renewal_day is not None and (type(renewal_day) is not int or not 1 <= renewal_day <= 31):
+        raise ValueError("订阅续费日应为 1 到 31 的整数，或留空")
+    out["subscriptionRenewalDay"] = renewal_day
     for key, choices in (("pricingMode", ("official", "custom")), ("speedMode", ("auto", "standard", "fast"))):
         selected = value.get(key, DEFAULT_SETTINGS[key])
         if selected not in choices:
@@ -269,6 +291,7 @@ class Meter:
         self.folder = folder
         self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cache = {}
+        self.snapshot_lock = threading.Lock()
         self.quota = read_json(folder / "quota.json", {"updatedAt": None, "error": "尚未查询额度", "buckets": []})
         self.refresh_lock = threading.Lock()
         self.last_attempt = 0
@@ -332,40 +355,72 @@ class Meter:
             return deepcopy(DEFAULT_SETTINGS)
 
     def snapshot(self):
+        # A reader owns an incremental counter baseline; concurrent page/MCP
+        # requests must not advance the same file twice.
+        with self.snapshot_lock:
+            return self._snapshot()
+
+    def _snapshot(self):
         self.last_client = time.time()
-        records = read_json(self.folder / "registry.json", {})
+        registry_path = self.folder / "registry.json"
+        records = read_json(registry_path, None)
+        registry_failed = (records is None and registry_path.exists()) or (records is not None and not isinstance(records, dict))
         turns, errors = [], []
-        if not isinstance(records, dict):
+        if registry_failed:
             records = {}
             errors.append("本地登记记录格式无效")
+        elif records is None:
+            records = {}
         settings = self.settings()
+        readings, read_errors, successful_reads, metadata = {}, {}, 0, {}
+        self.cache = {key: reader for key, reader in self.cache.items() if key in records}
         for thread_id, record in records.items():
             try:
                 path = Path(record["path"])
-                stat = path.stat()
-                stamp = (stat.st_mtime_ns, stat.st_size)
-                old = self.cache.get(thread_id)
-                if not old or old[0] != stamp:
-                    result = read_usage_log(path, thread_id)
-                    self.cache[thread_id] = (stamp, result)
-                result = self.cache[thread_id][1]
+                reader = self.cache.get(thread_id)
+                if reader is None:
+                    reader = self.cache[thread_id] = UsageLogReader(thread_id)
+                result = reader.read(path)
+                successful_reads += 1
+                readings[thread_id] = result.get("reading")
+                metadata[thread_id] = result.get("conversationMetadata", {})
                 turns.extend(dict(turn) for turn in result["turns"])
                 if result.get("warnings"):
                     errors.extend(result["warnings"])
             except Exception:
                 # Do not display stale last-good token totals as a new successful read.
+                # Keep the reader's rejection state: a foreign session found in
+                # a later chunk must not revive an earlier prefix next refresh.
+                read_errors[thread_id] = "这段对话的记录暂时无法读取，请稍后刷新。"
                 errors.append("某个已登记任务的记录暂不可读或格式已变化")
         turns.sort(key=lambda turn: turn.get("startedAt") or 0, reverse=True)
-        conversations = conversation_catalog(records, turns, self.titles)
+        conversations = conversation_catalog(records, turns, self.titles, metadata)
+        for conversation in conversations:
+            conversation["reading"] = readings.get(conversation["id"])
+            conversation["readError"] = read_errors.get(conversation["id"])
+            if conversation["reading"] and not conversation["reading"]["complete"]:
+                # A historical prefix may end in an old unfinished turn.
+                conversation["activeTurnCount"] = 0
         for turn in turns:
             turn["pricing"] = estimate_turn(turn, settings)
             turn["amount"] = turn["pricing"]["amount"]
+        periods = summarize_periods(turns, settings,
+                                   reading_incomplete=any(r and not r["complete"] for r in readings.values()),
+                                   read_error_count=len(read_errors) + int(registry_failed))
+        # Retain one recent record for older tasks so the global history cap
+        # cannot make an explicitly selected registered task appear empty.
+        visible_turns = turns[:200]
+        represented = {turn["threadId"] for turn in visible_turns}
+        for turn in turns[200:]:
+            if turn["threadId"] not in represented:
+                visible_turns.append(turn)
+                represented.add(turn["threadId"])
         status = "partial" if errors else "active" if records else "waiting"
         message = ("；".join(dict.fromkeys(errors)) if errors else
                    "已登记任务的本地记录；每条仅统计该任务自身，子代理单独列出" if records else
                    "等待登记任务。安装后在 Codex 中审阅并信任本插件 Hooks，新问题才会自动登记。")
-        return {"monitoring": {"status": status, "message": message, "lastUpdate": time.time() if records and not errors else None},
-                "quota": self.quota, "turns": turns[:200], "conversations": conversations, "settings": settings, "csrfToken": self.csrf,
+        return {"monitoring": {"status": status, "message": message, "lastUpdate": time.time() if successful_reads else None},
+                "quota": self.quota, "turns": visible_turns, "conversations": conversations, "periods": periods, "settings": settings, "csrfToken": self.csrf,
                 "fxReference": {**FX_REFERENCE, "customized": any(decimal.Decimal(settings["exchangeRates"][key]) != decimal.Decimal(EXCHANGE_RATES[key]) for key in EXCHANGE_RATES)}}
 
 
@@ -412,7 +467,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.server.meter.refresh_titles, daemon=True).start()
             return self.respond(snapshot)
         if self.path == "/health":
-            return self.respond({"app": "codex-usage-meter", "version": "0.5.0", "pid": os.getpid()})
+            return self.respond({"app": "codex-usage-meter", "version": "0.6.0", "pid": os.getpid()})
         self.respond({"error": "不存在"}, 404)
 
     def do_POST(self):
@@ -600,7 +655,7 @@ def mcp(folder):
                 continue
             method = req.get("method")
             if method == "initialize":
-                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-usage-meter", "version": "0.5.0"}}
+                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-usage-meter", "version": "0.6.0"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":

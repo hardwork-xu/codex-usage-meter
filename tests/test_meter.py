@@ -51,6 +51,14 @@ class QuotaTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_subscription_renewal_day_can_be_unset_or_valid_day(self):
+        self.assertIsNone(meter.validate_settings({})["subscriptionRenewalDay"])
+        for day in (1, 9, 31):
+            self.assertEqual(meter.validate_settings({"subscriptionRenewalDay": day})["subscriptionRenewalDay"], day)
+        for day in (0, 32, True, 9.0, "9", [], {}):
+            with self.subTest(day=day), self.assertRaises(ValueError):
+                meter.validate_settings({"subscriptionRenewalDay": day})
+
     def test_defaults_use_user_credit_price_in_usd_and_confirmed_standard_speed(self):
         result = meter.validate_settings({})
         self.assertEqual((result["pricingMode"], result["usdPerCredit"], result["currencyPerUsd"], result["speedMode"]),
@@ -193,13 +201,13 @@ class SnapshotTests(unittest.TestCase):
         self.result = {"turns": [{"threadId": "test-thread", "turnId": "turn-1", "startedAt": 123, "tokens": {"total": 1234567}}]}
 
     def test_unknown_rate_amount_is_unavailable(self):
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             result = self.subject.snapshot()
         self.assertIsNone(result["turns"][0]["amount"])
 
     def test_cost_uses_decimal_and_declared_precision(self):
         meter.write_json(self.folder / "settings.json", {"ratePerMillion": "2.5"})
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             result = self.subject.snapshot()
         self.assertEqual(result["turns"][0]["amount"], "3.086418")
         self.assertEqual(result["settings"]["pricingMode"], "custom")
@@ -213,7 +221,7 @@ class SnapshotTests(unittest.TestCase):
         turn.update({"model": "gpt-6-astra", "serviceTier": None, "pricingMetadataStatus": "unknown", "quality": "complete",
                      "tokens": {"total": 105000, "input": 100000, "cachedInput": 90000,
                                 "cacheWriteInput": 0, "output": 5000, "reasoningOutput": 2000}})
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             result = self.subject.snapshot()
         price = result["turns"][0]["pricing"]
         self.assertEqual(price["status"], "estimated")
@@ -230,7 +238,7 @@ class SnapshotTests(unittest.TestCase):
             "model": "gpt-6-astra", "serviceTier": None, "pricingMetadataStatus": "unknown", "quality": "complete",
             "tokens": {"total": 105000, "input": 100000, "cachedInput": 90000, "cacheWriteInput": 0, "output": 5000, "reasoningOutput": 2000},
         })
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             price = self.subject.snapshot()["turns"][0]["pricing"]
         self.assertEqual(price["estimateBasis"], "midpoint")
         self.assertEqual((price["credits"], price["usd"], price["amount"]), ("19.250000", "0.770000", "0.770000"))
@@ -256,7 +264,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(migrated["usdPerCredit"], "0.04")
 
     def test_fx_reference_customization_tracks_any_rate_not_only_selected_currency(self):
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             initial = self.subject.snapshot()["fxReference"]
         self.assertEqual(initial["date"], "2026-09-14")
         self.assertIn("欧洲央行", initial["label"])
@@ -266,13 +274,13 @@ class SnapshotTests(unittest.TestCase):
             with self.subTest(changed=code):
                 rates = {**meter.EXCHANGE_RATES, code: "8"}
                 meter.write_json(self.folder / "settings.json", meter.validate_settings({"currencyCode": "USD", "exchangeRates": rates}))
-                with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+                with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
                     state = self.subject.snapshot()
                 self.assertEqual(state["settings"]["currencyCode"], "USD")
                 self.assertTrue(state["fxReference"]["customized"])
         equivalent_rates = {"CNY": "6.708423510", "USD": "1.000", "HKD": "7.843390180"}
         meter.write_json(self.folder / "settings.json", meter.validate_settings({"exchangeRates": equivalent_rates}))
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             self.assertFalse(self.subject.snapshot()["fxReference"]["customized"])
 
     def test_invalid_saved_settings_return_independent_nested_defaults(self):
@@ -287,10 +295,10 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(self.subject.settings(), expected)
 
     def test_invalid_log_does_not_display_old_successful_total(self):
-        with mock.patch.object(meter, "read_usage_log", return_value=self.result):
+        with mock.patch.object(meter.UsageLogReader, "read", return_value=self.result):
             self.assertEqual(len(self.subject.snapshot()["turns"]), 1)
         self.log.write_text("changed invalid synthetic data", encoding="utf-8")
-        with mock.patch.object(meter, "read_usage_log", side_effect=ValueError("invalid")):
+        with mock.patch.object(meter.UsageLogReader, "read", side_effect=ValueError("invalid")):
             result = self.subject.snapshot()
         self.assertEqual(result["turns"], [])
         self.assertEqual(result["monitoring"]["status"], "partial")
