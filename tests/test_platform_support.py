@@ -166,6 +166,17 @@ class FileWriteTests(unittest.TestCase):
             self.assertEqual(list(Path(temp).glob("*.tmp")), [])
 
 
+class ServerBindingTests(unittest.TestCase):
+    def test_numeric_loopback_start_does_not_wait_for_dns(self):
+        with mock.patch.object(meter.socket, "getfqdn", side_effect=AssertionError("No DNS needed")), \
+                mock.patch.object(meter.socket, "gethostbyaddr", side_effect=AssertionError("No reverse DNS needed")):
+            with meter.MeterHTTPServer(("127.0.0.1", 0), meter.Handler) as server:
+                self.assertEqual(server.server_name, "127.0.0.1")
+                self.assertGreater(server.server_port, 0)
+                with meter.socket.create_connection((server.server_name, server.server_port), timeout=1):
+                    pass
+
+
 class ShutdownTests(unittest.TestCase):
     def handler(self, headers):
         result = meter.Handler.__new__(meter.Handler)

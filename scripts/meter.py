@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -447,7 +448,10 @@ class MeterHTTPServer(ThreadingHTTPServer):
             # Windows SO_REUSEADDR can let a second process share the same port.
             self.allow_reuse_address = False
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # HTTPServer.server_bind performs an unbounded reverse-DNS lookup.
+        # The panel only uses a numeric loopback address, so DNS is unnecessary.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def serve(folder, port=0):
