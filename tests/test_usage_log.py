@@ -361,12 +361,20 @@ class UsageLogTests(unittest.TestCase):
         self.assertEqual(turn["quality"], "complete")
         self.assertTrue(any("模型记录过多" in warning for warning in result["warnings"]))
 
-    def test_symlink_nonregular_suffix_and_size_are_rejected(self):
+    def test_symlink_leaf_is_rejected(self):
         self.path.write_text(json.dumps(META) + "\n")
         link = Path(self.temp.name) / "alias.jsonl"
-        link.symlink_to(self.path)
+        try:
+            link.symlink_to(self.path)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows account has no symlink creation privilege")
+            raise
         with self.assertRaises(usage_log.UsageLogError):
             usage_log.read_usage_log(link, THREAD)
+
+    def test_nonregular_suffix_and_size_are_rejected(self):
+        self.path.write_text(json.dumps(META) + "\n")
         directory = Path(self.temp.name) / "folder.jsonl"
         directory.mkdir()
         with self.assertRaises(usage_log.UsageLogError):

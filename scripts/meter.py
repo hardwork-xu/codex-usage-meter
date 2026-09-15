@@ -6,14 +6,11 @@ import argparse
 import contextlib
 from copy import deepcopy
 import decimal
-import fcntl
 import json
 import os
 from pathlib import Path
 import secrets
-import selectors
-import shutil
-import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -24,6 +21,7 @@ from urllib import request, error, parse
 from usage_log import read_usage_log
 from pricing import estimate_turn
 from conversations import fetch_conversation_titles, normalize_title, display_ids
+from platform_support import default_data_dir, codex_command, file_lock, is_windows, subprocess_options
 
 ROOT = Path(__file__).resolve().parent.parent
 EXCHANGE_RATES = {"CNY": "6.70842351", "USD": "1", "HKD": "7.84339018"}
@@ -38,7 +36,7 @@ EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SubagentStop
 
 def data_dir(value=None):
     base = value or os.environ.get("PLUGIN_DATA") or os.environ.get("METER_DATA_DIR")
-    return Path(base).expanduser().resolve() if base else Path.home() / "Library/Application Support/Codex Usage Meter"
+    return Path(base).expanduser().resolve() if base else default_data_dir()
 
 
 def read_json(path, default):
@@ -52,18 +50,27 @@ def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(path.name + "." + secrets.token_hex(6) + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as out:
-        json.dump(value, out, ensure_ascii=False, indent=2)
-        out.write("\n")
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(value, out, ensure_ascii=False, indent=2)
+            out.write("\n")
+        # Windows may briefly deny replacement while a reader has the old file open.
+        for attempt in range(11):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if not is_windows() or attempt == 10:
+                    raise
+                time.sleep(0.05)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 @contextlib.contextmanager
 def locked(folder, name="registry"):
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(folder / (name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
-    with os.fdopen(fd, "a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with file_lock(folder / (name + ".lock")):
         yield
 
 
@@ -131,59 +138,39 @@ def conversation_catalog(records, turns, titles):
 
 
 def codex_binary():
-    candidate = shutil.which("codex")
-    if candidate:
-        return candidate
-    for name in ("ChatGPT", "Codex"):
-        candidate = Path("/Applications") / (name + ".app") / "Contents/Resources/codex"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    raise RuntimeError("找不到 Codex，请先安装并登录 Codex")
+    command = codex_command()
+    if len(command) != 1:
+        raise RuntimeError("此 Codex 安装需要通过完整命令启动")
+    return command[0]
 
 
 def fetch_quota():
-    """Only documented handshake and read-only quota RPC; auth stays in Codex."""
-    proc = subprocess.Popen([codex_binary(), "app-server", "--stdio"],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, bufsize=1)
-    selector = selectors.DefaultSelector()
-    selector.register(proc.stdout, selectors.EVENT_READ)
-    def send(message):
-        proc.stdin.write(json.dumps(message) + "\n")
-        proc.stdin.flush()
+    """Use documented quota RPC over bounded, cross-platform UTF-8 pipes."""
+    from rpc_transport import JsonRpcProcess
     try:
-        send({"id": 1, "method": "initialize", "params": {
-            "clientInfo": {"name": "codex_usage_meter", "version": "0.4.0"}}})
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            for key, _ in selector.select(0.5):
-                line = key.fileobj.readline()
-                if not line:
-                    raise RuntimeError("Codex 用量连接已关闭")
-                try:
-                    response = json.loads(line)
-                except ValueError:
+        with JsonRpcProcess([*codex_command(), "app-server", "--stdio"], timeout=20) as rpc:
+            rpc.send({"id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "codex_usage_meter", "version": "0.5.0"}}})
+            initialized = False
+            for response in rpc.responses():
+                request_id = response.get("id")
+                if type(request_id) is not int:
                     continue
-                if response.get("id") == 1:
-                    if "error" in response:
+                if not initialized and request_id == 1:
+                    if "error" in response or not isinstance(response.get("result"), dict):
                         raise RuntimeError("Codex 初始化失败，请检查登录状态")
-                    send({"method": "initialized"})
-                    send({"id": 2, "method": "account/rateLimits/read"})
-                elif response.get("id") == 2:
+                    initialized = True
+                    rpc.send({"method": "initialized"})
+                    rpc.send({"id": 2, "method": "account/rateLimits/read"})
+                elif initialized and request_id == 2:
                     if "error" in response:
                         raise RuntimeError("Codex 暂未提供额度，请检查登录状态后重试")
                     return normalize_quota(response.get("result", {}))
-        raise RuntimeError("额度查询超时，请稍后重试")
-    finally:
-        selector.close()
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-        proc.stdin.close()
-        proc.stdout.close()
+    except TimeoutError:
+        raise RuntimeError("额度查询超时，请稍后重试") from None
+    except (OSError, subprocess.SubprocessError):
+        raise RuntimeError("Codex 用量连接暂不可用，请检查本地运行环境") from None
+    raise RuntimeError("Codex 用量连接已关闭")
 
 
 def normalize_quota(value):
@@ -302,7 +289,7 @@ class Meter:
             records = read_json(self.folder / "registry.json", {})
             if not isinstance(records, dict) or not records:
                 return
-            found = fetch_conversation_titles(list(records), codex_binary())
+            found = fetch_conversation_titles(list(records), codex_command())
             self.titles = {**self.titles, **found}
             write_json(self.folder / "titles.json", self.titles)
         except Exception:
@@ -382,7 +369,7 @@ class Meter:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "CodexUsageMeter/0.4"
+    server_version = "CodexUsageMeter/0.5"
 
     def log_message(self, *_):
         pass
@@ -424,12 +411,17 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.server.meter.refresh_titles, daemon=True).start()
             return self.respond(snapshot)
         if self.path == "/health":
-            return self.respond({"app": "codex-usage-meter", "version": "0.4.0", "pid": os.getpid()})
+            return self.respond({"app": "codex-usage-meter", "version": "0.5.0", "pid": os.getpid()})
         self.respond({"error": "不存在"}, 404)
 
     def do_POST(self):
         if not self.allowed(write=True):
             return self.respond({"error": "请求校验失败，请刷新面板"}, 403)
+        if self.path == "/api/shutdown":
+            self.respond({"ok": True})
+            self.server.stop_event.set()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if self.path == "/api/refresh":
             threading.Thread(target=self.server.meter.refresh, daemon=True).start()
             return self.respond({"ok": True})
@@ -449,26 +441,47 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": str(exc)}, 400)
 
 
+class MeterHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        if is_windows():
+            # Windows SO_REUSEADDR can let a second process share the same port.
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def serve(folder, port=0):
     with locked(folder, "service"):
+        if port == 0:
+            endpoint = read_json(folder / "endpoint.json", {})
+            url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
+            if local_url(url):
+                port = parse.urlsplit(url).port
         meter = Meter(folder)
-        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        try:
+            server = MeterHTTPServer(("127.0.0.1", port), Handler)
+        except OSError as exc:
+            if port:
+                raise RuntimeError("本地面板无法使用端口 " + str(port) + "，未更换地址") from exc
+            raise
         server.meter = meter
         server.daemon_threads = True
+        server.stop_event = threading.Event()
         endpoint = {"url": "http://127.0.0.1:" + str(server.server_port) + "/", "pid": os.getpid()}
         write_json(folder / "endpoint.json", endpoint)
         def refresh_loop():
-            while True:
+            while not server.stop_event.is_set():
                 if time.time() - meter.last_client < 120:
                     meter.refresh()
                     if time.time() - meter.last_title_attempt >= 300:
                         meter.refresh_titles()
-                time.sleep(60)
+                server.stop_event.wait(60)
         threading.Thread(target=refresh_loop, daemon=True).start()
         print(json.dumps(endpoint), flush=True)
         try:
             server.serve_forever()
         finally:
+            server.stop_event.set()
             server.server_close()
 
 
@@ -496,10 +509,43 @@ def local_get(url):
         return json.load(response)
 
 
+def local_shutdown(url, token):
+    if (not local_url(url) or parse.urlsplit(url).path != "/" or
+            not isinstance(token, str) or not token or not token.isascii() or len(token) > 256):
+        raise RuntimeError("本地面板停止请求无效")
+    opener = request.build_opener(request.ProxyHandler({}), NoRedirect())
+    message = request.Request(url + "api/shutdown", data=b"{}", method="POST", headers={
+        "Content-Type": "application/json", "Origin": url.rstrip("/"), "X-Meter-Token": token})
+    with opener.open(message, timeout=2) as response:
+        result = json.load(response)
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError("本地面板未确认停止请求")
+
+
+def stop_service(folder):
+    """Ask only the authenticated meter at its saved local address to shut down."""
+    endpoint = read_json(folder / "endpoint.json", {})
+    url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
+    if not local_url(url) or parse.urlsplit(url).path != "/":
+        return False
+    try:
+        health = local_get(url + "health")
+    except OSError:
+        return False
+    if (not isinstance(health, dict) or health.get("app") != "codex-usage-meter" or
+            health.get("pid") != endpoint.get("pid")):
+        return False
+    state = local_get(url + "api/state")
+    if not isinstance(state, dict):
+        raise RuntimeError("本地面板状态无效，未停止任何进程")
+    local_shutdown(url, state.get("csrfToken"))
+    return True
+
+
 def ensure_service(folder):
     with locked(folder, "launch"):
         endpoint = read_json(folder / "endpoint.json", {})
-        url = endpoint.get("url", "")
+        url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
         if local_url(url):
             try:
                 if local_get(url + "health").get("app") == "codex-usage-meter":
@@ -508,11 +554,11 @@ def ensure_service(folder):
                 pass
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--data-dir", str(folder), "serve"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True, close_fds=True)
+                         **subprocess_options(background=True))
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             endpoint = read_json(folder / "endpoint.json", {})
-            url = endpoint.get("url", "")
+            url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
             try:
                 if local_url(url) and local_get(url + "health").get("app") == "codex-usage-meter":
                     return url
@@ -550,7 +596,7 @@ def mcp(folder):
                 continue
             method = req.get("method")
             if method == "initialize":
-                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-usage-meter", "version": "0.4.0"}}
+                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-usage-meter", "version": "0.5.0"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
@@ -578,6 +624,10 @@ def mcp(folder):
 
 
 def main():
+    # MCP and hook JSON are UTF-8 even when Windows redirects a legacy codepage.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -613,18 +663,7 @@ def main():
         state.pop("csrfToken", None)
         print(json.dumps(state, ensure_ascii=False, indent=2))
     elif args.command == "stop":
-        endpoint = read_json(folder / "endpoint.json", {})
-        url = endpoint.get("url", "")
-        if not local_url(url):
-            print("没有可确认的本地用量服务")
-            return
-        try:
-            health = local_get(url + "health")
-            if health.get("app") == "codex-usage-meter" and health.get("pid") == endpoint.get("pid"):
-                os.kill(health["pid"], signal.SIGTERM)
-                print("用量面板已停止")
-        except OSError:
-            print("用量面板已经停止")
+        print("已请求停止用量面板" if stop_service(folder) else "没有可确认的本地用量服务")
 
 
 if __name__ == "__main__":

@@ -36,20 +36,27 @@ Standard credits = ((输入 − 缓存输入) × 输入单价
 
 ## 安装与使用
 
-需要 macOS、Python 3.10+、已登录的 Codex CLI 或桌面应用，以及安装器所需的官方 `plugin-creator` 技能。
+支持 macOS 和原生 Windows，使用同一份源码。需要 Python 3.10+、已登录的 Codex CLI，以及安装器所需的官方 `plugin-creator` 技能。Windows 使用 PowerShell，不需要 WSL。
 
 1. 下载或克隆源代码，保留文件夹名称 `codex-usage-meter`。
-2. 审阅插件源码和 Hooks，运行文件夹中的 **安装到 Codex.command**，或执行 `python3 scripts/install.py`。
-3. **安装完成后，还需要手动信任 Hooks。** 按照[首次启用流程](docs/SETUP.zh-CN.md)打开终端中的 `/hooks`，审阅用量计的五项钩子，再完成信任。
+2. 审阅插件源码和 Hooks。macOS 运行 **安装到 Codex.command**；Windows 运行 **install-windows.cmd**。
+3. **安装完成后，还需要手动信任 Hooks。** 按照对应系统的说明打开终端中的 `/hooks`，审阅用量计的五项钩子，再完成信任。
 4. 回到 Codex App，新开一个对话，发送“打开用量计”。
 
-**第一次使用请看：[逐步操作说明：安装、审阅、信任与打开面板](docs/SETUP.zh-CN.md)。** 包含 `Hooks need review` 提示如何选择、何时可以按 `t`、如何判断信任成功，以及常见问题。已安装插件的用户可直接从说明中的第 2 步开始。
+**第一次使用请看：[macOS 逐步操作说明](docs/SETUP.zh-CN.md) · [Windows 逐步操作说明](docs/SETUP.windows.zh-CN.md)。** 包含安装前准备、`Hooks need review` 提示如何选择、何时可以按 `t`、如何判断信任成功，以及常见问题。
 
 源代码中的 `.mcp.json` 有意保留为空配置；安装器在**安装副本**中生成适合本机的 MCP 路径与本地数据目录。不要直接把未经安装器处理的源目录当成已配置好的 MCP 服务。已安装副本包含本机路径，不应重新上传到源代码仓库。
 
 安装器不会修改 Hooks 信任记录、沙箱规则或审批设置。已有同名目录的处理以安装器提示为准。统计运行时仅使用 Python 标准库；附带的 PyYAML 纯 Python 模块仅供官方插件验证器使用，其许可证保留在 `vendor/`。
 
-安装后的数据默认位于 `~/Library/Application Support/Codex Usage Meter`。数据包含已登记日志的本地路径、任务标识、用量快照和货币设置，不属于源代码。手动运行时若宿主提供 `PLUGIN_DATA`，会优先使用该目录。
+安装后的数据默认位于以下位置。数据包含已登记日志的本地路径、任务标识、用量快照和货币设置，不属于源代码。手动运行时若宿主提供 `PLUGIN_DATA`，会优先使用该目录。
+
+| 系统 | 本地数据目录 |
+| --- | --- |
+| macOS | `~/Library/Application Support/Codex Usage Meter` |
+| Windows | `%LOCALAPPDATA%\Codex Usage Meter` |
+
+服务首次启动会保存面板地址；使用同一个数据目录重新启动时，复用原来的地址。如果该端口被其他程序占用，会提示无法启动，不会自动换成另一个地址。保留数据目录中的 `endpoint.json`，即可保留重启时使用的端口。
 
 官方任务名称缓存保存在本地 `titles.json`，自定义别名保存在本地登记记录中；别名不会修改 Codex 的任务标题。浏览器还会在本地记住选定的对话。名称和别名可能包含私人信息，均不应连同运行数据或真实面板截图上传到源代码仓库。
 
@@ -64,6 +71,8 @@ python3 scripts/meter.py --data-dir ./dev-data open
 ```sh
 python3 scripts/meter.py --data-dir ./dev-data stop
 ```
+
+Windows 在 PowerShell 中将上述命令的 `python3` 换成 `py -3`。源码预览不需要额外的管理员权限。
 
 停止安装后的默认服务可运行 `python3 scripts/meter.py stop`。停止自动登记或卸载请使用 Codex 正常插件管理；插件不会删除原始任务日志。
 
@@ -87,6 +96,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
 可重复的发布检查见 [PUBLIC_RELEASE_CHECKS.md](PUBLIC_RELEASE_CHECKS.md)。公开仓库不包含真实面板截图、账户用量结果、任务日志或开发数据。自动化测试结果不等同于在每个 Codex 版本上完成了安装和 Hooks 信任验证。
+
+[兼容性自动检查](https://github.com/hardwork-xu/codex-usage-meter/actions/workflows/compatibility.yml)在 Windows 和 macOS 上运行 Python 3.10、3.12 测试，包括中文路径、进程通信、文件锁、启动与停止、重启地址复用和端口冲突。测试使用临时目录和合成记录，不需要登录账户。
 
 ## 资料与许可
 

@@ -5,9 +5,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
             "async": true,
-            "timeout": 10
+            "timeout": 10,
+            "commandWindows": "py -3 -X utf8 (Join-Path -Path $env:PLUGIN_ROOT -ChildPath 'scripts/meter.py') hook; exit $LASTEXITCODE"
           }
         ]
       }
@@ -17,9 +18,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
             "async": true,
-            "timeout": 10
+            "timeout": 10,
+            "commandWindows": "py -3 -X utf8 (Join-Path -Path $env:PLUGIN_ROOT -ChildPath 'scripts/meter.py') hook; exit $LASTEXITCODE"
           }
         ]
       }
@@ -29,9 +31,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
             "async": true,
-            "timeout": 10
+            "timeout": 10,
+            "commandWindows": "py -3 -X utf8 (Join-Path -Path $env:PLUGIN_ROOT -ChildPath 'scripts/meter.py') hook; exit $LASTEXITCODE"
           }
         ]
       }
@@ -41,9 +44,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
             "async": true,
-            "timeout": 10
+            "timeout": 10,
+            "commandWindows": "py -3 -X utf8 (Join-Path -Path $env:PLUGIN_ROOT -ChildPath 'scripts/meter.py') hook; exit $LASTEXITCODE"
           }
         ]
       }
@@ -53,9 +57,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/scripts/meter.py\" hook",
             "async": true,
-            "timeout": 3
+            "timeout": 3,
+            "commandWindows": "py -3 -X utf8 (Join-Path -Path $env:PLUGIN_ROOT -ChildPath 'scripts/meter.py') hook; exit $LASTEXITCODE"
           }
         ]
       }

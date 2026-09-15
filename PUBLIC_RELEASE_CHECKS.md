@@ -19,6 +19,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 
 The suite covers token increments and duplicate snapshots, malformed or incomplete logs, turn attribution, pricing and currency conversion, unavailable prices, local HTTP restrictions, and MCP behavior. It also checks bounded task-name reads that discard previews and messages, display-ID collisions and local catalog behavior where corresponding tests are present. The tests must not query a real account, launch a model task, or open real task transcripts.
 
+On Windows PowerShell, run `py -3 -m unittest discover -s tests -v`. The compatibility workflow runs the suite on native Windows and macOS with Python 3.10 and 3.12. Platform checks include real subprocess pipes, Unicode paths, cross-process file locks, isolated HTTP/MCP startup and authenticated shutdown, reuse of the saved address, and failure when the saved port is occupied. Installer tests use temporary scaffolds, never the user's actual marketplace. Review the workflow result for the exact published commit; automated tests do not establish live Codex login or manual hook trust on Windows.
+
 Validate the compatibility manifest with the installed official `plugin-creator` validator. Keep the plugin folder name identical to its manifest name. The installation script runs the same validation during normal setup. Do not alter the validator or suppress its checks.
 
 For a UI check, serve only generated sample data or an empty temporary data directory. Confirm empty, partial, unavailable-price and currency states. If taking a publication screenshot, use visibly synthetic data and inspect the final image before adding it to the release.

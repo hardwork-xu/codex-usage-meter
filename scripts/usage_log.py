@@ -394,8 +394,16 @@ def read_usage_log(path: str | os.PathLike[str], expected_thread_id: str) -> dic
         raise UsageLogError("需要用量记录的文件路径。") from None
     if file_path.suffix.lower() != ".jsonl":
         raise UsageLogError("用量记录必须是 JSONL 文件。")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    def ordinary_leaf(details):
+        return (stat.S_ISREG(details.st_mode) and
+                not getattr(details, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+             getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     try:
+        original = file_path.lstat()
+        if not ordinary_leaf(original):
+            raise UsageLogError("用量记录路径必须指向普通文件，不能是链接。")
         descriptor = os.open(file_path, flags)
     except (OSError, ValueError):
         raise UsageLogError("无法打开指定的用量记录文件。") from None
@@ -403,7 +411,11 @@ def read_usage_log(path: str | os.PathLike[str], expected_thread_id: str) -> dic
     try:
         with os.fdopen(descriptor, "rb") as stream:
             details = os.fstat(stream.fileno())
-            if not stat.S_ISREG(details.st_mode):
+            current = file_path.lstat()
+            identity = (details.st_dev, details.st_ino)
+            if (not ordinary_leaf(details) or not ordinary_leaf(current) or
+                    identity != (original.st_dev, original.st_ino) or
+                    identity != (current.st_dev, current.st_ino)):
                 raise UsageLogError("用量记录路径必须指向普通文件。")
             if details.st_size > MAX_LOG_BYTES:
                 raise UsageLogError("用量记录超过 128 MiB 的读取上限。")
