@@ -1,8 +1,12 @@
-# 用量计 · Codex Usage Meter
+# Codex Token Usage Dashboard · Codex 用量统计面板
 
 一个本地运行的 Codex 插件，用来查看每次提问的 Token、按公开费率折算的金额，以及官方接口提供的剩余额度。面板通过 Codex 应用内浏览器打开，支持人民币、美元、港元和自定义货币。
 
 这是社区项目，不是 OpenAI 官方发布或认证插件。公开此源代码仓库不等于提交到 OpenAI 插件目录。
+
+仓库现使用更直观的名称 `codex-token-usage-dashboard`。插件安装标识仍为 `codex-usage-meter@codex-usage-meter-community`，技能命名空间、现有配置和本地数据目录保持兼容。
+
+The repository is now named `codex-token-usage-dashboard`. The plugin installation identifier remains `codex-usage-meter@codex-usage-meter-community`; skill namespaces, existing configuration, and local data directories remain compatible.
 
 ## 功能与统计口径
 
@@ -51,7 +55,7 @@ Standard credits = ((输入 − 缓存输入) × 输入单价
 先审阅本仓库源码，再依次执行：
 
 ```sh
-codex plugin marketplace add hardwork-xu/codex-usage-meter
+codex plugin marketplace add hardwork-xu/codex-token-usage-dashboard
 codex plugin add codex-usage-meter@codex-usage-meter-community
 ```
 
@@ -123,7 +127,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 
 可重复的发布检查见 [PUBLIC_RELEASE_CHECKS.md](PUBLIC_RELEASE_CHECKS.md)。公开仓库不包含真实面板截图、账户用量结果、任务日志或开发数据。自动化测试结果不等同于在每个 Codex 版本上完成了安装和 Hooks 信任验证。
 
-[兼容性自动检查](https://github.com/hardwork-xu/codex-usage-meter/actions/workflows/compatibility.yml)在 Windows 和 macOS 上运行 Python 3.10、3.12 测试，包括中文路径、进程通信、文件锁、启动与停止、重启地址复用和端口冲突。测试使用临时目录和合成记录，不需要登录账户。
+[兼容性自动检查](https://github.com/hardwork-xu/codex-token-usage-dashboard/actions/workflows/compatibility.yml)在 Windows 和 macOS 上运行 Python 3.10、3.12 测试，包括中文路径、进程通信、文件锁、启动与停止、重启地址复用和端口冲突。测试使用临时目录和合成记录，不需要登录账户。
 
 ## 资料与许可
 

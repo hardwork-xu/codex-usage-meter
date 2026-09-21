@@ -8,7 +8,7 @@
       "name": "codex-usage-meter",
       "source": {
         "source": "url",
-        "url": "https://github.com/hardwork-xu/codex-usage-meter.git",
+        "url": "https://github.com/hardwork-xu/codex-token-usage-dashboard.git",
         "ref": "main"
       },
       "policy": {

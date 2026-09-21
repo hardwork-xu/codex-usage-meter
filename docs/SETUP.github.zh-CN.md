@@ -26,10 +26,10 @@ Windows 使用 PowerShell，不需要 WSL。原生 Windows 与 WSL 的 Python、
 
 ## 2. 添加来源并安装
 
-先审阅 [仓库源码](https://github.com/hardwork-xu/codex-usage-meter)，包括插件技能、本地脚本和 Hooks。然后依次执行：
+先审阅 [仓库源码](https://github.com/hardwork-xu/codex-token-usage-dashboard)，包括插件技能、本地脚本和 Hooks。然后依次执行：
 
 ```sh
-codex plugin marketplace add hardwork-xu/codex-usage-meter
+codex plugin marketplace add hardwork-xu/codex-token-usage-dashboard
 codex plugin add codex-usage-meter@codex-usage-meter-community
 ```
 
@@ -103,6 +103,6 @@ codex plugin add codex-usage-meter@codex-usage-meter-community
 
 如果更习惯让 Codex 协助，可复制这一句作为安装请求：
 
-> 请先审阅 https://github.com/hardwork-xu/codex-usage-meter 的源码并检查是否已有 personal 安装；如果没有，请通过官方插件命令安装 codex-usage-meter@codex-usage-meter-community，保留正常权限与 Hooks 审阅流程，告诉我需要手动确认的步骤，不要让我手改 config.toml 或 MCP 配置。
+> 请先审阅 https://github.com/hardwork-xu/codex-token-usage-dashboard 的源码并检查是否已有 personal 安装；如果没有，请通过官方插件命令安装 codex-usage-meter@codex-usage-meter-community，保留正常权限与 Hooks 审阅流程，告诉我需要手动确认的步骤，不要让我手改 config.toml 或 MCP 配置。
 
 手工源码安装与旧 `personal` 渠道说明仍保留在 [macOS 指南](SETUP.zh-CN.md) 和 [Windows 指南](SETUP.windows.zh-CN.md)。这条兼容路径使用原有安装器，与本指南的 GitHub 直接安装二选一。

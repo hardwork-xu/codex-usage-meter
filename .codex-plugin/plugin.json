@@ -25,7 +25,7 @@
     "tokens",
     "local"
   ],
-  "homepage": "https://github.com/hardwork-xu/codex-usage-meter",
-  "repository": "https://github.com/hardwork-xu/codex-usage-meter",
+  "homepage": "https://github.com/hardwork-xu/codex-token-usage-dashboard",
+  "repository": "https://github.com/hardwork-xu/codex-token-usage-dashboard",
   "license": "MIT"
 }

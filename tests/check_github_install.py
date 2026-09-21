@@ -28,7 +28,7 @@ def command(*arguments):
     return json.loads(result.stdout)
 
 
-added = command("plugin", "marketplace", "add", "hardwork-xu/codex-usage-meter", "--json")
+added = command("plugin", "marketplace", "add", "hardwork-xu/codex-token-usage-dashboard", "--json")
 assert added["marketplaceName"] == MARKET, added
 command("plugin", "add", NAME + "@" + MARKET, "--json")
 expected = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))["version"]
