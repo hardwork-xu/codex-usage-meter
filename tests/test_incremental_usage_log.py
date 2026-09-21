@@ -180,10 +180,14 @@ class IncrementalUsageTests(unittest.TestCase):
             stream.seek(186 * 1024 * 1024)
             stream.write(b"\n" + body(77)[len(line(META)):])
         reader = usage_log.UsageLogReader(THREAD)
-        first, _ = self.traced_read(reader)
-        self.assertFalse(first["reading"]["complete"])
-        self.assertGreater(first["reading"]["fileBytes"], 186 * 1024 * 1024)
-        result = self.finish(reader, maximum=30)
+        # This checks the byte cap, not disk speed. A slow CI disk may hit the
+        # separate soft time budget first; its cutoff is covered with an
+        # advancing clock in test_read_budget.py.
+        with mock.patch.object(usage_log.time, "monotonic", return_value=0.0):
+            first, _ = self.traced_read(reader)
+            self.assertFalse(first["reading"]["complete"])
+            self.assertGreater(first["reading"]["fileBytes"], 186 * 1024 * 1024)
+            result = self.finish(reader, maximum=30)
         self.assertEqual(result["turns"][0]["tokens"]["total"], 77)
 
     def test_truncate_same_size_rewrite_and_regrow_reset_baseline(self):
