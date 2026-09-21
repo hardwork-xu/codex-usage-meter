@@ -18,6 +18,8 @@ quota.json
 endpoint.json
 settings.json
 titles.json
+service-mode.json
+local.codex-usage-meter.plist
 *.jsonl
 *.log
 *.lock

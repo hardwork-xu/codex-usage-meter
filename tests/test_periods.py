@@ -1,6 +1,7 @@
 """Calendar and pricing coverage checks using synthetic event-day counters."""
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 import sys
 import unittest
@@ -81,11 +82,15 @@ class PeriodTests(unittest.TestCase):
         result = self.summarize([first, latest, deepcopy(latest), other])["today"]
         self.assertEqual(result["tokens"]["total"], 500)
         self.assertEqual(result["turnCount"], 2)
+        self.assertEqual(result["models"][0]["tokens"]["total"], 500)
+        self.assertEqual(result["models"][0]["turnCount"], 2)
 
     def test_all_turns_are_aggregated_before_display_limit(self):
         result = self.summarize([turn({"2026-09-15": 100}, ident=f"fixture-{n}") for n in range(251)])["today"]
         self.assertEqual(result["turnCount"], 251)
         self.assertEqual(result["tokens"]["total"], 25100)
+        self.assertEqual(result["models"][0]["turnCount"], 251)
+        self.assertEqual(result["models"][0]["tokens"]["total"], 25100)
 
     def test_unassigned_is_never_inferred_from_start_date(self):
         value = turn({}, undated=1000)
@@ -168,6 +173,114 @@ class PeriodTests(unittest.TestCase):
         before = deepcopy(values)
         self.summarize(values)
         self.assertEqual(values, before)
+
+    def assertModelsConservePeriod(self, period):
+        groups = period["models"]
+        if period["tokens"] is not None:
+            for key, total in period["tokens"].items():
+                self.assertEqual(sum(group["tokens"][key] for group in groups), total, key)
+        self.assertEqual(sum(group["turnCount"] for group in groups), period["turnCount"])
+        self.assertEqual(sum(group["unpricedTokens"] for group in groups), period["unpricedTokens"])
+        for key in ("amount", "credits", "usd"):
+            known = [Decimal(group[key]) for group in groups if group[key] is not None]
+            if known:
+                self.assertEqual(sum(known), Decimal(period[key]), key)
+            elif groups:
+                self.assertIsNone(period[key], key)
+
+    def test_models_are_sorted_with_labels_and_conserve_money_and_tokens(self):
+        result = self.summarize([
+            turn({"2026-09-15": 1000000}, ident="luna", model="gpt-5.6-luna"),
+            turn({"2026-09-15": 12000000}, ident="astra"),
+        ])
+        for name in ("today", "subscription"):
+            period = result[name]
+            self.assertEqual([group["model"] for group in period["models"]], ["gpt-6-astra", "gpt-5.6-luna"])
+            self.assertEqual([group["label"] for group in period["models"]], ["GPT-6 Astra", "GPT-5.6 Luna"])
+            self.assertEqual([group["tokens"]["total"] for group in period["models"]], [12000000, 1000000])
+            self.assertEqual(period["models"][0]["amount"], "120.000000")
+            self.assertEqual(period["models"][1]["amount"], "0.200000")
+            self.assertModelsConservePeriod(period)
+
+    def test_models_use_period_dates_and_exclude_undated_usage(self):
+        result = self.summarize([
+            turn({"2026-09-08": 9000, "2026-09-14": 200, "2026-09-15": 100}, undated=50),
+            turn({"2026-09-15": 150}, ident="luna", model="gpt-5.6-luna"),
+        ])
+        self.assertEqual([group["model"] for group in result["today"]["models"]], ["gpt-5.6-luna", "gpt-6-astra"])
+        self.assertEqual(result["subscription"]["models"][0]["tokens"]["total"], 300)
+        self.assertEqual(result["unassignedTokens"], 50)
+        for period in (result["today"], result["subscription"]):
+            self.assertTrue(all(group["partial"] for group in period["models"]))
+            self.assertModelsConservePeriod(period)
+
+    def test_unknown_mixed_and_unsupported_model_ids_are_not_guessed(self):
+        unknown = turn({"2026-09-15": 100}, ident="unknown", model=None)
+        mixed = turn({"2026-09-15": 200}, ident="mixed", model=None)
+        mixed["pricingMetadataStatus"] = "mixed"
+        unsupported = turn({"2026-09-15": 50}, ident="future", model="future-fixture-model")
+        period = self.summarize([unknown, mixed, unsupported])["today"]
+        group, future = period["models"]
+        self.assertIsNone(group["model"])
+        self.assertEqual(group["label"], "未确认模型")
+        self.assertEqual(group["tokens"]["total"], 300)
+        self.assertEqual(group["turnCount"], 2)
+        self.assertEqual(future["model"], "future-fixture-model")
+        self.assertEqual(future["label"], "future-fixture-model")
+        self.assertTrue(all(item["amount"] is None for item in period["models"]))
+        self.assertModelsConservePeriod(period)
+
+    def test_missing_or_mixed_tier_does_not_erase_a_known_model(self):
+        normal = turn({"2026-09-15": 1000})
+        mixed_tier = turn({"2026-09-15": 500}, ident="mixed-tier")
+        mixed_tier["pricingMetadataStatus"] = "mixed"
+        period = self.summarize([normal, mixed_tier])["today"]
+        self.assertEqual(len(period["models"]), 1)
+        group = period["models"][0]
+        self.assertEqual(group["model"], "gpt-6-astra")
+        self.assertEqual(group["amount"], "0.010000")
+        self.assertEqual(group["unpricedTokens"], 500)
+        self.assertTrue(group["partial"])
+        self.assertModelsConservePeriod(period)
+
+    def test_spark_and_all_six_counter_fields_are_preserved(self):
+        astra = turn({"2026-09-15": 120})
+        astra["tokens"] = {"total": 120, "input": 100, "output": 20,
+                           "cachedInput": 40, "cacheWriteInput": 2, "reasoningOutput": 10}
+        astra["dailyUsage"]["2026-09-15"] = dict(astra["tokens"])
+        spark = turn({"2026-09-15": 500}, ident="spark", model="gpt-5.3-codex-spark")
+        period = self.summarize([astra, spark])["today"]
+        self.assertEqual(period["models"][0]["model"], "gpt-5.3-codex-spark")
+        self.assertEqual(period["models"][0]["unpricedTokens"], 500)
+        self.assertTrue(all(group["amount"] is None for group in period["models"]))
+        self.assertEqual(period["models"][1]["tokens"], astra["tokens"])
+        self.assertModelsConservePeriod(period)
+
+    def test_custom_pricing_and_partial_reads_are_preserved_per_model(self):
+        self.settings.update(pricingMode="custom", ratePerMillion="2")
+        result = self.summarize([turn({"2026-09-15": 1000}, model=None)], reading_incomplete=True)["today"]
+        group = result["models"][0]
+        self.assertIsNone(group["model"])
+        self.assertEqual(group["amount"], "0.002000")
+        self.assertIsNone(group["credits"])
+        self.assertIsNone(group["usd"])
+        self.assertEqual(group["unpricedTokens"], 0)
+        self.assertTrue(group["partial"])
+        self.assertModelsConservePeriod(result)
+
+    def test_empty_and_unconfigured_periods_have_no_model_groups(self):
+        result = self.summarize([])
+        self.assertEqual(result["today"]["models"], [])
+        self.assertEqual(result["subscription"]["models"], [])
+        self.settings["subscriptionRenewalDay"] = None
+        result = self.summarize([turn({"2026-09-15": 100})])
+        self.assertEqual(result["subscription"]["models"], [])
+
+    def test_invalid_model_metadata_is_not_exposed_as_a_label(self):
+        value = turn({"2026-09-15": 100}, model="synthetic text with spaces")
+        group = self.summarize([value])["today"]["models"][0]
+        self.assertIsNone(group["model"])
+        self.assertEqual(group["label"], "未确认模型")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from pricing import estimate_turn
 from periods import summarize_periods
 from conversations import fetch_conversation_titles, normalize_title, display_ids
 from platform_support import default_data_dir, codex_command, file_lock, is_windows, subprocess_options
+from service_lifecycle import read_service_mode, activate_launchd_socket, adopt_http_socket, SOCKET_NAME
 
 ROOT = Path(__file__).resolve().parent.parent
 EXCHANGE_RATES = {"CNY": "6.70842351", "USD": "1", "HKD": "7.84339018"}
@@ -86,8 +87,6 @@ def register(folder, path, thread_id):
         records = read_json(folder / "registry.json", {})
         if not isinstance(records, dict):
             raise ValueError("本地登记记录格式无效，请检查数据目录")
-        if thread_id not in records and len(records) >= 100:
-            raise ValueError("已达到 100 个任务的本地记录上限")
         previous = records.get(thread_id)
         previous = previous if isinstance(previous, dict) else {}
         records[thread_id] = {**previous, "path": str(path), "registeredAt": previous.get("registeredAt", time.time())}
@@ -169,7 +168,7 @@ def fetch_quota():
     try:
         with JsonRpcProcess([*codex_command(), "app-server", "--stdio"], timeout=20) as rpc:
             rpc.send({"id": 1, "method": "initialize", "params": {
-                "clientInfo": {"name": "codex_usage_meter", "version": "0.6.0"}}})
+                "clientInfo": {"name": "codex_usage_meter", "version": "0.7.0"}}})
             initialized = False
             for response in rpc.responses():
                 request_id = response.get("id")
@@ -183,7 +182,11 @@ def fetch_quota():
                     rpc.send({"id": 2, "method": "account/rateLimits/read"})
                 elif initialized and request_id == 2:
                     if "error" in response:
-                        raise RuntimeError("Codex 暂未提供额度，请检查登录状态后重试")
+                        detail = response.get("error")
+                        message = str(detail.get("message", ""))[:1000].lower() if isinstance(detail, dict) else ""
+                        if any(term in message for term in ("error sending request", "connection", "timed out", "timeout")):
+                            raise RuntimeError("官方额度连接失败，请检查本机网络或代理；当前保留上次成功的额度")
+                        raise RuntimeError("Codex 官方额度查询未成功，请稍后重试")
                     return normalize_quota(response.get("result", {}))
     except TimeoutError:
         raise RuntimeError("额度查询超时，请稍后重试") from None
@@ -291,6 +294,7 @@ class Meter:
         self.folder = folder
         self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cache = {}
+        self.reader_incomplete = {}
         self.snapshot_lock = threading.Lock()
         self.quota = read_json(folder / "quota.json", {"updatedAt": None, "error": "尚未查询额度", "buckets": []})
         self.refresh_lock = threading.Lock()
@@ -302,6 +306,7 @@ class Meter:
             self.titles = {}
         self.title_lock = threading.Lock()
         self.last_title_attempt = 0
+        self.title_cursor = 0
 
     def refresh_titles(self):
         if not self.title_lock.acquire(blocking=False):
@@ -313,7 +318,14 @@ class Meter:
             records = read_json(self.folder / "registry.json", {})
             if not isinstance(records, dict) or not records:
                 return
-            found = fetch_conversation_titles(list(records), codex_command())
+            # The official title reader accepts at most 100 exact IDs per call.
+            # Advance before I/O so unnamed tasks or a failed batch cannot
+            # starve the remaining registered tasks, including cached names.
+            ids = sorted(records)
+            start = self.title_cursor % len(ids)
+            batch = ids[start:start + 100]
+            self.title_cursor = (start + len(batch)) % len(ids)
+            found = fetch_conversation_titles(batch, codex_command())
             self.titles = {**self.titles, **found}
             write_json(self.folder / "titles.json", self.titles)
         except Exception:
@@ -374,13 +386,20 @@ class Meter:
         settings = self.settings()
         readings, read_errors, successful_reads, metadata = {}, {}, 0, {}
         self.cache = {key: reader for key, reader in self.cache.items() if key in records}
+        self.reader_incomplete = {key: value for key, value in self.reader_incomplete.items() if key in records}
+        # Freeze this pass's shares before reads change their completion state.
+        # Caught-up files are still checked; pending history gets the larger share.
+        weights = {key: 100 if self.reader_incomplete.get(key, True) else 1 for key in records}
+        total_weight = sum(weights.values())
         for thread_id, record in records.items():
             try:
                 path = Path(record["path"])
                 reader = self.cache.get(thread_id)
                 if reader is None:
                     reader = self.cache[thread_id] = UsageLogReader(thread_id)
-                result = reader.read(path)
+                result = reader.read(path, time_budget=weights[thread_id] / total_weight)
+                reading = result.get("reading")
+                self.reader_incomplete[thread_id] = not (isinstance(reading, dict) and reading.get("complete") is True)
                 successful_reads += 1
                 readings[thread_id] = result.get("reading")
                 metadata[thread_id] = result.get("conversationMetadata", {})
@@ -388,6 +407,7 @@ class Meter:
                 if result.get("warnings"):
                     errors.extend(result["warnings"])
             except Exception:
+                self.reader_incomplete[thread_id] = True
                 # Do not display stale last-good token totals as a new successful read.
                 # Keep the reader's rejection state: a foreign session found in
                 # a later chunk must not revive an earlier prefix next refresh.
@@ -425,7 +445,7 @@ class Meter:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "CodexUsageMeter/0.5"
+    server_version = "CodexUsageMeter/0.7"
 
     def log_message(self, *_):
         pass
@@ -467,7 +487,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.server.meter.refresh_titles, daemon=True).start()
             return self.respond(snapshot)
         if self.path == "/health":
-            return self.respond({"app": "codex-usage-meter", "version": "0.6.0", "pid": os.getpid()})
+            return self.respond({"app": "codex-usage-meter", "version": "0.7.0", "pid": os.getpid()})
         self.respond({"error": "不存在"}, 404)
 
     def do_POST(self):
@@ -498,6 +518,46 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class MeterHTTPServer(ThreadingHTTPServer):
+    def __init__(self, *args, **kwargs):
+        self.activity_lock = threading.Lock()
+        self.active_requests = 0
+        self.last_request_at = time.monotonic()
+        self.idle_timeout = 0
+        self.idle_shutdown_started = False
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request_socket, client_address):
+        with self.activity_lock:
+            self.active_requests += 1
+            self.last_request_at = time.monotonic()
+        try:
+            super().process_request(request_socket, client_address)
+        except BaseException:
+            with self.activity_lock:
+                self.active_requests -= 1
+            raise
+
+    def process_request_thread(self, request_socket, client_address):
+        try:
+            request_socket.settimeout(15)
+            super().process_request_thread(request_socket, client_address)
+        finally:
+            with self.activity_lock:
+                self.active_requests -= 1
+                self.last_request_at = time.monotonic()
+
+    def service_actions(self):
+        with self.activity_lock:
+            idle = (self.idle_timeout > 0 and not self.active_requests and
+                    not self.idle_shutdown_started and
+                    time.monotonic() - self.last_request_at >= self.idle_timeout)
+            if idle:
+                self.idle_shutdown_started = True
+        if idle:
+            self.stop_event.set()
+            # shutdown() must run outside the serve_forever() thread.
+            threading.Thread(target=self.shutdown, daemon=True).start()
+
     def server_bind(self):
         if is_windows():
             # Windows SO_REUSEADDR can let a second process share the same port.
@@ -509,22 +569,38 @@ class MeterHTTPServer(ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-def serve(folder, port=0):
+def serve(folder, port=0, *, launchd_socket=None, idle_timeout=0):
+    if (type(port) is not int or not 0 <= port <= 65535 or
+            type(idle_timeout) is not int or not 0 <= idle_timeout <= 86400 or
+            launchd_socket not in (None, SOCKET_NAME)):
+        raise ValueError("本地服务启动参数无效")
     with locked(folder, "service"):
+        endpoint_path = folder / "endpoint.json"
+        endpoint = read_json(endpoint_path, {})
+        saved_url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
         if port == 0:
-            endpoint = read_json(folder / "endpoint.json", {})
-            url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
-            if local_url(url):
-                port = parse.urlsplit(url).port
+            if local_url(saved_url):
+                port = parse.urlsplit(saved_url).port
+        if launchd_socket and not 1 <= port <= 65535:
+            raise ValueError("按需服务需要有效的固定端口")
+        if launchd_socket and endpoint_path.exists() and saved_url != "http://127.0.0.1:" + str(port) + "/":
+            raise RuntimeError("按需监听与已保存的面板地址不一致，未更换地址")
         meter = Meter(folder)
         try:
-            server = MeterHTTPServer(("127.0.0.1", port), Handler)
+            if launchd_socket:
+                listener = activate_launchd_socket(launchd_socket, port)
+                server = adopt_http_socket(MeterHTTPServer, Handler, listener, port)
+            else:
+                server = MeterHTTPServer(("127.0.0.1", port), Handler)
         except OSError as exc:
             if port:
                 raise RuntimeError("本地面板无法使用端口 " + str(port) + "，未更换地址") from exc
             raise
         server.meter = meter
-        server.daemon_threads = True
+        # Finish accepted requests before the worker exits. launchd retains the
+        # listener so a later browser visit can activate a fresh worker.
+        server.daemon_threads = False
+        server.idle_timeout = idle_timeout
         server.stop_event = threading.Event()
         endpoint = {"url": "http://127.0.0.1:" + str(server.server_port) + "/", "pid": os.getpid()}
         write_json(folder / "endpoint.json", endpoint)
@@ -591,7 +667,10 @@ def stop_service(folder):
         health = local_get(url + "health")
     except OSError:
         return False
+    # A demand connection can wake a new worker and replace the saved PID.
+    endpoint = read_json(folder / "endpoint.json", {})
     if (not isinstance(health, dict) or health.get("app") != "codex-usage-meter" or
+            not isinstance(endpoint, dict) or endpoint.get("url") != url or
             health.get("pid") != endpoint.get("pid")):
         return False
     state = local_get(url + "api/state")
@@ -603,28 +682,35 @@ def stop_service(folder):
 
 def ensure_service(folder):
     with locked(folder, "launch"):
+        mode = read_service_mode(folder)
         endpoint = read_json(folder / "endpoint.json", {})
         url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
+        if mode:
+            expected_url = "http://127.0.0.1:" + str(mode["port"]) + "/"
+            if url and url != expected_url:
+                raise RuntimeError("按需服务与保存的面板地址不一致，未更换地址")
+            url = expected_url
         if local_url(url):
             try:
                 if local_get(url + "health").get("app") == "codex-usage-meter":
                     return url
             except Exception:
                 pass
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--data-dir", str(folder), "serve"],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         **subprocess_options(background=True))
-        deadline = time.monotonic() + 5
+        if not mode:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--data-dir", str(folder), "serve"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             **subprocess_options(background=True))
+        deadline = time.monotonic() + (12 if mode else 5)
         while time.monotonic() < deadline:
             endpoint = read_json(folder / "endpoint.json", {})
-            url = endpoint.get("url", "") if isinstance(endpoint, dict) else ""
+            url = expected_url if mode else endpoint.get("url", "") if isinstance(endpoint, dict) else ""
             try:
                 if local_url(url) and local_get(url + "health").get("app") == "codex-usage-meter":
                     return url
             except Exception:
                 pass
             time.sleep(0.1)
-        raise RuntimeError("本地面板未能启动")
+        raise RuntimeError("本地按需入口未能唤醒服务，请检查服务安装状态" if mode else "本地面板未能启动")
 
 
 def handle_hook(folder, data):
@@ -655,7 +741,7 @@ def mcp(folder):
                 continue
             method = req.get("method")
             if method == "initialize":
-                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-usage-meter", "version": "0.6.0"}}
+                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-usage-meter", "version": "0.7.0"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
@@ -692,6 +778,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     service = sub.add_parser("serve")
     service.add_argument("--port", type=int, default=0)
+    service.add_argument("--launchd-socket", choices=[SOCKET_NAME])
+    service.add_argument("--idle-timeout", type=int, default=0)
     sub.add_parser("open")
     sub.add_parser("mcp")
     sub.add_parser("hook")
@@ -703,7 +791,7 @@ def main():
     args = parser.parse_args()
     folder = data_dir(args.data_dir)
     if args.command == "serve":
-        serve(folder, args.port)
+        serve(folder, args.port, launchd_socket=args.launchd_socket, idle_timeout=args.idle_timeout)
     elif args.command == "hook":
         # A meter must never block, continue, or alter the agent's work.
         try:

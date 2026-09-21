@@ -4,12 +4,14 @@ from __future__ import annotations
 import calendar
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP, localcontext
+import re
 
-from pricing import estimate_turn
+from pricing import RATES, estimate_turn
 
 
 _FIELDS = ("total", "input", "cachedInput", "cacheWriteInput", "output", "reasoningOutput")
 _MONEY_FIELDS = ("amount", "credits", "usd")
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 
 def _zero():
@@ -95,6 +97,7 @@ def _period(prepared, settings, start, end, *, unassigned, coverage_gap):
     totals = _zero()
     money = {key: Decimal(0) for key in _MONEY_FIELDS}
     available = dict.fromkeys(_MONEY_FIELDS, False)
+    models = {}
     turn_count = unpriced_tokens = unpriced_turns = 0
     partial = bool(coverage_gap or unassigned)
     for turn, daily in prepared:
@@ -106,18 +109,41 @@ def _period(prepared, settings, start, end, *, unassigned, coverage_gap):
             _add(sliced, amount)
         _add(totals, sliced)
         turn_count += 1
+        # A known model remains attributable when only its service tier is
+        # uncertain. The parser clears model itself when model evidence mixes.
+        model = turn.get("model")
+        if not isinstance(model, str) or not _MODEL_ID.fullmatch(model):
+            model = None
+        if model not in models:
+            models[model] = {
+                "model": model, "label": RATES[model][0] if model in RATES else model or "未确认模型",
+                "tokens": _zero(), "unpricedTokens": 0, "turnCount": 0,
+                "partial": bool(coverage_gap or unassigned),
+                "money": {key: Decimal(0) for key in _MONEY_FIELDS},
+                "available": dict.fromkeys(_MONEY_FIELDS, False),
+            }
+        group = models[model]
+        _add(group["tokens"], sliced)
+        group["turnCount"] += 1
         # Sum a turn's matching days before pricing to avoid per-day rounding.
         estimate = estimate_turn({**turn, "tokens": sliced}, settings)
-        partial |= (turn.get("quality") != "complete" or
-                    bool(turn.get("readingIncomplete")) or estimate["status"] == "partial")
+        turn_partial = (turn.get("quality") != "complete" or
+                        bool(turn.get("readingIncomplete")) or estimate["status"] == "partial")
+        partial |= turn_partial
+        group["partial"] |= turn_partial
         if estimate["amount"] is None:
             unpriced_tokens += sliced["total"]
             unpriced_turns += 1
             partial = True
+            group["unpricedTokens"] += sliced["total"]
+            group["partial"] = True
         for key in _MONEY_FIELDS:
             if estimate[key] is not None:
-                money[key] += Decimal(estimate[key])
+                value = Decimal(estimate[key])
+                money[key] += value
                 available[key] = True
+                group["money"][key] += value
+                group["available"][key] = True
 
     notes = ["按本机日期汇总已记录用量；金额为已可计价部分的估算，不代表订阅扣款。"]
     if not turn_count:
@@ -141,6 +167,12 @@ def _period(prepared, settings, start, end, *, unassigned, coverage_gap):
         **{key: _format(money[key]) if available[key] else None for key in _MONEY_FIELDS},
         "unpricedTokens": unpriced_tokens, "unpricedTurnCount": unpriced_turns,
         "unassignedTokens": unassigned, "partial": partial, "turnCount": turn_count,
+        "models": [
+            {key: group[key] for key in ("model", "label", "tokens", "unpricedTokens", "partial", "turnCount")} |
+            {key: _format(group["money"][key]) if group["available"][key] else None for key in _MONEY_FIELDS}
+            for group in sorted(models.values(), key=lambda group: (
+                -group["tokens"]["total"], group["model"] is None, group["model"] or ""))
+        ],
         "note": " ".join(notes),
     }
 
@@ -190,6 +222,7 @@ def summarize_periods(turns, settings, *, now=None, reading_incomplete=False, re
                 "amount": None, "credits": None, "usd": None, "unpricedTokens": 0,
                 "unpricedTurnCount": 0, "unassignedTokens": unassigned,
                 "partial": bool(gap or unassigned), "turnCount": 0,
+                "models": [],
                 "note": "先设置每月续订日，才能汇总当前订阅周期。",
             }
         else:

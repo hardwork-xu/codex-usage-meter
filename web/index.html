@@ -26,6 +26,8 @@
     .reading-notice{margin:-6px 0 21px;padding:16px 19px;border:1px solid #e9d8bb;border-radius:14px;background:var(--amber-soft);color:var(--amber)}.reading-identity{font-size:10px;overflow-wrap:anywhere;margin-bottom:5px}.reading-heading{font-size:13px;font-weight:600}.reading-note{font-size:11px;line-height:1.8;margin-top:5px}.reading-progress{display:block;width:100%;height:6px;margin:12px 0 7px;border:0;border-radius:8px;background:#e9e0ce;accent-color:#bd9459;overflow:hidden}.reading-progress::-webkit-progress-bar{background:#e9e0ce;border-radius:8px}.reading-progress::-webkit-progress-value{background:#bd9459;border-radius:8px}.reading-progress::-moz-progress-bar{background:#bd9459;border-radius:8px}.reading-numbers{font-size:10px;overflow-wrap:anywhere}.history-total-note{display:block;font-size:10px;color:var(--amber);margin-top:4px}.running-read-note{display:block;font-size:10px;color:var(--amber);margin-top:7px}
     .period-section{margin-bottom:25px}.period-header{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin:0 3px 11px}.period-header h2{font-size:13px}.period-scope{font-size:10px;color:var(--muted);line-height:1.7}.period-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.period-card{padding:21px 23px;border-radius:18px}.period-card h3{font-size:14px}.period-date{font-size:10px;color:var(--muted);margin-top:8px}.period-values{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:15px;margin-top:17px}.period-value{font-size:29px;letter-spacing:-.6px;font-weight:550;line-height:1.35;overflow-wrap:anywhere}.period-money{font-size:26px;letter-spacing:-.4px;overflow-wrap:anywhere;line-height:1.5;font-weight:550}.period-value-label{font-size:10px;color:var(--muted);margin-bottom:4px}.period-credit{font-size:10px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}.period-coverage{font-size:10px;line-height:1.8;color:var(--muted);margin-top:13px;padding-top:11px;border-top:1px solid var(--line)}.period-coverage.attention{color:var(--amber)}.period-note{margin-top:4px}.period-action{font-size:10px;margin-top:8px}.period-unassigned{font-size:10px;color:var(--amber);line-height:1.8;margin:10px 3px 0}.task-source{font-size:10px;color:var(--muted);line-height:1.7;overflow-wrap:anywhere;margin-top:7px}.renewal-settings{margin-top:20px;padding-top:17px;border-top:1px solid var(--line)}
     @media(max-width:680px){.period-section{margin-bottom:19px}.period-header{display:block}.period-scope{font-size:9px;margin-top:5px}.period-grid{grid-template-columns:1fr;gap:11px}.period-card{padding:18px 20px}.period-value{font-size:28px}.period-money{font-size:26px}.period-values{margin-top:13px}.period-date{font-size:9px}.period-coverage{margin-top:10px}.period-header h2{font-size:12px}}
+    .period-models{margin-top:17px;padding-top:13px;border-top:1px solid var(--line)}.period-models-header{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px}.period-models h4{font-size:11px;font-weight:550;margin:0}.model-units{font-size:9px;color:var(--muted)}.model-list{list-style:none;margin:0;padding:0}.model-row{padding:10px 0}.model-row + .model-row{border-top:1px solid #eef0eb}.model-row-top{display:flex;align-items:baseline;justify-content:space-between;gap:13px}.model-name{font-size:12px;font-weight:550;min-width:0;overflow-wrap:anywhere}.model-tokens{font-size:17px;line-height:1.4;white-space:nowrap;font-weight:550;cursor:help}.model-tokens small{font-size:9px;font-weight:400;color:var(--muted);margin-left:4px}.model-details{font-size:10px;line-height:1.8;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}.model-coverage{font-size:10px;line-height:1.7;color:var(--amber);margin-top:3px}.model-empty{font-size:11px;color:var(--muted);padding:10px 0 2px;line-height:1.8}
+    @media(max-width:680px){.model-row-top{gap:9px}.model-name{font-size:11px}.model-tokens{font-size:16px}.period-models{margin-top:13px}}
     @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
   </style>
 </head>
@@ -39,8 +41,8 @@
     <div id="connection-alert" class="connection-alert" role="status" hidden></div>
     <main>
       <section class="period-section" aria-labelledby="period-heading"><div class="period-header"><h2 id="period-heading">全部已登记任务的用量</h2><p class="period-scope">主任务和子任务各计一次 · 不受下方对话选择影响</p></div><div class="period-grid">
-        <article class="card period-card" aria-labelledby="today-heading"><div class="card-top"><h3 id="today-heading">今天</h3><span id="today-badge" class="badge">等待汇总</span></div><p id="today-date" class="period-date">按用量事件的本地日期统计</p><div class="period-values"><div><p class="period-value-label">已记录 Tokens</p><p id="today-tokens" class="period-value mono">—</p></div><div><p id="today-money-label" class="period-value-label">折算价值 · 估算</p><p id="today-amount" class="period-money mono">—</p><p id="today-credits" class="period-credit mono">Credit 尚未提供</p></div></div><div id="today-coverage" class="period-coverage"><p id="today-count">等待统计数据</p><p id="today-note" class="period-note"></p></div></article>
-        <article class="card period-card" aria-labelledby="subscription-heading"><div class="card-top"><h3 id="subscription-heading">当前订阅周期</h3><span id="subscription-badge" class="badge">等待汇总</span></div><p id="subscription-date" class="period-date">按每月续订日划分</p><div class="period-values"><div><p class="period-value-label">已记录 Tokens</p><p id="subscription-tokens" class="period-value mono">—</p></div><div><p id="subscription-money-label" class="period-value-label">折算价值 · 估算</p><p id="subscription-amount" class="period-money mono">—</p><p id="subscription-credits" class="period-credit mono">Credit 尚未提供</p></div></div><div id="subscription-coverage" class="period-coverage"><p id="subscription-count">等待统计数据</p><p id="subscription-note" class="period-note"></p><button id="configure-renewal" type="button" class="text-button period-action">设置每月续订日 ↗</button></div></article>
+        <article class="card period-card" aria-labelledby="today-heading"><div class="card-top"><h3 id="today-heading">今天</h3><span id="today-badge" class="badge">等待汇总</span></div><p id="today-date" class="period-date">按用量事件的本地日期统计</p><div class="period-values"><div><p class="period-value-label">已记录 Tokens</p><p id="today-tokens" class="period-value mono">—</p></div><div><p id="today-money-label" class="period-value-label">折算价值 · 估算</p><p id="today-amount" class="period-money mono">—</p><p id="today-credits" class="period-credit mono">Credit 尚未提供</p></div></div><section class="period-models" aria-labelledby="today-models-heading"><div class="period-models-header"><h4 id="today-models-heading">按模型</h4><span class="model-units">K = 千 · M = 百万</span></div><ul id="today-models" class="model-list" hidden></ul><p id="today-models-empty" class="model-empty">模型明细等待服务更新。</p></section><div id="today-coverage" class="period-coverage"><p id="today-count">等待统计数据</p><p id="today-note" class="period-note"></p></div></article>
+        <article class="card period-card" aria-labelledby="subscription-heading"><div class="card-top"><h3 id="subscription-heading">当前订阅周期</h3><span id="subscription-badge" class="badge">等待汇总</span></div><p id="subscription-date" class="period-date">按每月续订日划分</p><div class="period-values"><div><p class="period-value-label">已记录 Tokens</p><p id="subscription-tokens" class="period-value mono">—</p></div><div><p id="subscription-money-label" class="period-value-label">折算价值 · 估算</p><p id="subscription-amount" class="period-money mono">—</p><p id="subscription-credits" class="period-credit mono">Credit 尚未提供</p></div></div><section class="period-models" aria-labelledby="subscription-models-heading"><div class="period-models-header"><h4 id="subscription-models-heading">按模型</h4><span class="model-units">K = 千 · M = 百万</span></div><ul id="subscription-models" class="model-list" hidden></ul><p id="subscription-models-empty" class="model-empty">模型明细等待服务更新。</p></section><div id="subscription-coverage" class="period-coverage"><p id="subscription-count">等待统计数据</p><p id="subscription-note" class="period-note"></p><button id="configure-renewal" type="button" class="text-button period-action">设置每月续订日 ↗</button></div></article>
       </div><p id="period-unassigned" class="period-unassigned" hidden></p><p class="period-scope" style="margin:9px 3px 0">仅覆盖已登记日志中的用量，金额是折算价值，不是订阅实际扣款。</p></section>
       <section class="conversation-toolbar" aria-label="选择要查看的对话"><div class="conversation-select-wrap"><label for="conversation-select">正在查看的对话</label><select id="conversation-select" aria-describedby="conversation-filter-note" disabled><option value="">等待对话记录</option></select><p id="conversation-filter-note" class="conversation-toolbar-note">选定后会保持显示这段对话，不会跳到其他正在进行的对话。</p></div><button id="edit-conversation-alias" type="button" class="button conversation-alias-button" disabled>设置别名</button></section>
       <section id="reading-notice" class="reading-notice" aria-labelledby="reading-heading" hidden><p id="reading-identity" class="reading-identity"></p><h2 id="reading-heading" class="reading-heading" role="status">正在补读历史记录</h2><p id="reading-note" class="reading-note"></p><progress id="reading-progress" class="reading-progress" aria-label="历史记录读取进度" aria-describedby="reading-numbers"></progress><p id="reading-numbers" class="reading-numbers mono"></p></section>
@@ -201,6 +203,40 @@
     return (s.currencySymbol ?? '$') + amount + (s.currencySymbol === '' && s.currencyName ? ' ' + s.currencyName : '');
   }
   function validRenewalDay(value) { return Number.isInteger(value) && value >= 1 && value <= 31; }
+  function compactTokens(value) {
+    if (!validNumber(value)) return '—';
+    if (value < 1000) return fmt(value);
+    const divisor = value >= 1000000 ? 1000000 : 1000, suffix = divisor === 1000000 ? 'M' : 'K', hundredths = Math.round(value / (divisor / 100));
+    const rounded = hundredths * (divisor / 100) !== value;
+    return (rounded ? '≈' : '') + new Intl.NumberFormat('zh-CN',{maximumFractionDigits:2}).format(hundredths / 100) + suffix;
+  }
+  function renderPeriodModels(key, period) {
+    const list = $(key + '-models'), empty = $(key + '-models-empty'); list.replaceChildren();
+    const models = Array.isArray(period?.models) ? period.models.filter(entry => entry && typeof entry === 'object') : null;
+    list.hidden = !models?.length; empty.hidden = !!models?.length;
+    if (!models?.length) {
+      empty.textContent = period?.status === 'needs_configuration' ? '设置续订日后显示本周期的模型明细。' : models === null ? '模型明细等待服务更新。' : period?.partial || period?.status === 'unavailable' ? '暂未读到可归属本时段的模型用量，统计可能尚未补齐。' : '本时段暂无已记录的模型用量。';
+      return;
+    }
+    for (const entry of models) {
+      const label = typeof entry.model !== 'string' || !entry.model ? '未确认模型' : typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : entry.model;
+      const row = node('li','model-row'), top = node('div','model-row-top'), name = node('span','model-name',label), total = entry.tokens?.total;
+      if (typeof entry.model === 'string' && entry.model) name.title = entry.model;
+      const tokens = node('span','model-tokens mono'), visual = node('span','',compactTokens(total)), exact = validNumber(total) ? fmt(total) + ' Tokens' : 'Token 用量暂不可用';
+      visual.setAttribute('aria-hidden','true'); visual.append(node('small','','Tokens')); tokens.title = exact; tokens.append(visual,node('span','sr-only',exact)); top.append(name,tokens); row.append(top);
+      const details = [];
+      if (officialMode() && rawDecimal(entry.credits) !== null) details.push(decimalText(entry.credits) + ' Credits');
+      details.push(amountText({amount:entry.amount}) + (rawDecimal(entry.amount) !== null ? '（估算）' : ''));
+      if (validNumber(entry.turnCount)) details.push(fmt(entry.turnCount) + ' 次提问');
+      const detail = node('p','model-details mono',details.join(' · '));
+      if (rawDecimal(entry.amount) !== null) detail.title = '估算值 ' + amountText({amount:entry.amount},true);
+      row.append(detail);
+      const notes = []; if (entry.partial) notes.push('部分统计');
+      if (validNumber(entry.unpricedTokens) && entry.unpricedTokens > 0) notes.push(fmt(entry.unpricedTokens) + ' Tokens 未计价' + (rawDecimal(entry.amount) !== null ? '，金额仅含可计价部分' : ''));
+      if (notes.length) row.append(node('p','model-coverage',notes.join(' · ')));
+      list.append(row);
+    }
+  }
   function renderPeriods() {
     const periods = state?.periods, renewalDay = validRenewalDay(state?.settings?.subscriptionRenewalDay) ? state.settings.subscriptionRenewalDay : null;
     for (const key of ['today','subscription']) {
@@ -218,6 +254,7 @@
       if (typeof period?.note === 'string' && period.note.trim()) notes.push(period.note.trim());
       if (needsConfiguration) notes.push('今天的汇总仍可独立查看。');
       text(key + '-note',notes.join(' ')); $(key + '-coverage').classList.toggle('attention',needsConfiguration || unavailable || partial);
+      renderPeriodModels(key,period);
     }
     const unassigned = validNumber(periods?.unassignedTokens) ? periods.unassignedTokens : Math.max(0,...['today','subscription'].map(key => validNumber(periods?.[key]?.unassignedTokens) ? periods[key].unassignedTokens : 0));
     $('period-unassigned').hidden = unassigned === 0; text('period-unassigned',unassigned > 0 ? '另有 ' + fmt(unassigned) + ' Tokens 缺少可用的事件日期，未计入以上周期。' : '');

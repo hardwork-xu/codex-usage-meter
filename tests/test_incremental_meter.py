@@ -100,11 +100,11 @@ class IncrementalMeterTests(unittest.TestCase):
     def test_snapshot_requests_serialize_reader_creation_and_advance(self):
         real = usage_log.UsageLogReader('synthetic-thread')
         active = threading.Lock()
-        def read(path):
+        def read(path, **kwargs):
             self.assertTrue(active.acquire(blocking=False), 'Overlapping reader use')
             try:
                 time.sleep(0.01)
-                return real.read(path)
+                return real.read(path, **kwargs)
             finally:
                 active.release()
         reader = mock.Mock(read=mock.Mock(side_effect=read))

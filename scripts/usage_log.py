@@ -489,11 +489,15 @@ class UsageLogReader:
                 turn["note"] = note + " " + turn["note"]
         return result
 
-    def read(self, path: str | os.PathLike[str]) -> dict[str, Any]:
+    def read(self, path: str | os.PathLike[str], *, time_budget: float = 1.0) -> dict[str, Any]:
+        """Apply a soft parsing budget; one record may finish after the deadline."""
+        if (isinstance(time_budget, bool) or not isinstance(time_budget, (int, float)) or
+                not 0 < time_budget <= 1 or not math.isfinite(time_budget)):
+            raise ValueError("单次解析时间预算必须是大于零且不超过 1 秒的有限数值。")
         with self._lock:
-            return self._read(path)
+            return self._read(path, time_budget)
 
-    def _read(self, path):
+    def _read(self, path, time_budget):
         try:
             file_path = Path(path).expanduser().absolute()
         except (TypeError, ValueError):
@@ -555,9 +559,10 @@ class UsageLogReader:
 
                 stream.seek(self._offset)
                 self._waiting_at_end = False
-                deadline = time.monotonic() + 1.0
-                for _ in range(MAX_RECORDS_PER_READ):
-                    if self._offset >= size or spent >= self._byte_budget or time.monotonic() >= deadline:
+                deadline = time.monotonic() + time_budget
+                for record_index in range(MAX_RECORDS_PER_READ):
+                    if (self._offset >= size or spent >= self._byte_budget or
+                            record_index > 0 and time.monotonic() >= deadline):
                         break
                     line_start = self._offset
                     limit = min(self._byte_budget - spent, size - self._offset,
