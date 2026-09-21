@@ -54,7 +54,9 @@ with JsonRpcProcess([*prefix, "app-server", "--stdio"], timeout=30) as rpc:
             # the user-facing PascalCase event names.
             assert {h["eventName"] for h in plugin["hooks"]} == {
                 "sessionStart", "userPromptSubmit", "stop", "subagentStop", "interrupt"}, plugin["hooks"]
-            skill = next(skill for skill in plugin["skills"] if skill["name"] == "usage-meter")
+            skills = [skill for skill in plugin["skills"] if skill["name"] == NAME + ":usage-meter"]
+            assert len(skills) == 1, plugin["skills"]
+            skill = skills[0]
             installed = Path(skill["path"]).parents[2]
             subprocess.run([sys.executable, "-X", "utf8", str(installed / "scripts/run.py"), "--help"],
                            check=True, timeout=10, stdout=subprocess.DEVNULL)
