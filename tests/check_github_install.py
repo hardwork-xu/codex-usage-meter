@@ -50,8 +50,10 @@ with JsonRpcProcess([*prefix, "app-server", "--stdio"], timeout=30) as rpc:
             summary = plugin["summary"]
             assert summary["installed"] and summary["enabled"], summary
             assert summary["localVersion"] == expected, summary
+            # App Server serializes HookEventName as camelCase; hooks.json uses
+            # the user-facing PascalCase event names.
             assert {h["eventName"] for h in plugin["hooks"]} == {
-                "SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "Interrupt"}, plugin["hooks"]
+                "sessionStart", "userPromptSubmit", "stop", "subagentStop", "interrupt"}, plugin["hooks"]
             skill = next(skill for skill in plugin["skills"] if skill["name"] == "usage-meter")
             installed = Path(skill["path"]).parents[2]
             subprocess.run([sys.executable, "-X", "utf8", str(installed / "scripts/run.py"), "--help"],
