@@ -46,20 +46,26 @@ Standard credits = ((输入 − 缓存输入) × 输入单价
 
 ## 安装与使用
 
-支持 macOS 和原生 Windows，使用同一份源码。需要 Python 3.10+、已登录的 Codex CLI，以及安装器所需的官方 `plugin-creator` 技能。Windows 使用 PowerShell，不需要 WSL。
+**新用户推荐直接从 GitHub 安装。** 需要已登录、支持 `plugin` 子命令的 Codex CLI，以及 Python 3.10+：macOS 使用 `python3`，原生 Windows 使用 `py -3` 和 PowerShell。
 
-1. 下载或克隆源代码，保留文件夹名称 `codex-usage-meter`。
-2. 审阅插件源码和 Hooks。macOS 运行 **安装到 Codex.command**；Windows 运行 **install-windows.cmd**。
-3. **安装完成后，还需要手动信任 Hooks。** 按照对应系统的说明打开终端中的 `/hooks`，审阅用量计的五项钩子，再完成信任。
-4. 回到 Codex App，新开一个对话，发送“打开用量计”。
+先审阅本仓库源码，再依次执行：
 
-**第一次使用请看：[macOS 逐步操作说明](docs/SETUP.zh-CN.md) · [Windows 逐步操作说明](docs/SETUP.windows.zh-CN.md)。** 包含安装前准备、`Hooks need review` 提示如何选择、何时可以按 `t`、如何判断信任成功，以及常见问题。
+```sh
+codex plugin marketplace add hardwork-xu/codex-usage-meter
+codex plugin add codex-usage-meter@codex-usage-meter-community
+```
 
-源代码中的 `.mcp.json` 有意保留为空配置；安装器在**安装副本**中生成适合本机的 MCP 路径与本地数据目录。不要直接把未经安装器处理的源目录当成已配置好的 MCP 服务。已安装副本包含本机路径，不应重新上传到源代码仓库。
+安装后，在 Codex 的 `/hooks` 中正常审阅并信任用量计的五项 Hooks；再回到 App **新建任务**，发送“打开用量计”。技能会定位已安装插件并调用本地入口，你不需要先下载源码、安装 `plugin-creator` 或手工编辑配置。
 
-安装器不会修改 Hooks 信任记录、沙箱规则或审批设置。已有同名目录的处理以安装器提示为准。统计运行时仅使用 Python 标准库；附带的 PyYAML 纯 Python 模块仅供官方插件验证器使用，其许可证保留在 `vendor/`。
+**完整步骤：[GitHub 新用户安装指南](docs/SETUP.github.zh-CN.md)。** 包括环境准备、Hooks 审阅、首次使用、可选 macOS 按需入口，以及更新命令。使用的是本仓库的社区来源，不表示已上架 OpenAI 官方插件目录。[官方插件打包与市场说明](https://developers.openai.com/plugins/build/plugins)
 
-安装后的数据默认位于以下位置。数据包含已登记日志的本地路径、任务标识、用量快照和货币设置，不属于源代码。手动运行时若宿主提供 `PLUGIN_DATA`，会优先使用该目录。
+**已通过 `personal` 个人市场安装的用户保留原渠道，不要重复安装。** 手工源码安装与原有安装器仍可使用，见 [macOS 指南](docs/SETUP.zh-CN.md) 和 [Windows 指南](docs/SETUP.windows.zh-CN.md)；该兼容路径需要官方 `plugin-creator` 技能。
+
+源码中的 `.mcp.json` 有意保留为空。GitHub 直接安装通过插件技能运行 `scripts/run.py`，不依赖额外 MCP 配置；原有手工安装器仍可在**安装副本**中生成本机 MCP 路径与数据目录。这些带本机路径的配置不应上传回源代码仓库。
+
+两种安装方式都保留 Codex 正常的 Hooks 信任、沙箱与审批流程。统计运行时仅使用 Python 标准库；附带的 PyYAML 纯 Python 模块仅供原有安装器的官方插件验证使用，其许可证保留在 `vendor/`。
+
+安装后的数据默认位于以下位置。GitHub 安装的技能与 Hooks 共用这些稳定目录，不依赖插件版本缓存。数据包含已登记日志的本地路径、任务标识、用量快照和货币设置，不属于源代码。直接手动运行 `meter.py` 时，若宿主提供 `PLUGIN_DATA`，会优先使用该目录。
 
 | 系统 | 本地数据目录 |
 | --- | --- |
@@ -68,22 +74,11 @@ Standard credits = ((输入 − 缓存输入) × 输入单价
 
 服务首次启动会保存面板地址；使用同一个数据目录重新启动时，复用原来的地址。如果该端口被其他程序占用，会提示无法启动，不会自动换成另一个地址。保留数据目录中的 `endpoint.json`，即可保留重启时使用的端口。
 
-macOS 还可安装按需浏览器入口。在终端运行已安装副本中的命令：
+macOS 还可启用按需浏览器入口。在已加载插件的新任务中说“请启用用量计的 macOS 按需浏览器入口”，技能会定位插件并调用 `scripts/run.py browser-install`；查看或卸载可分别说“查看用量计按需入口状态”“卸载用量计按需入口”，对应 `browser-status` 和 `browser-uninstall`。无需手工查找插件缓存路径。
 
-```sh
-python3 "$HOME/plugins/codex-usage-meter/scripts/browser_access.py" install
-```
+安装后，在本机浏览器输入保存的地址即可。登录期间，macOS 只保留 `127.0.0.1` 的监听端口；浏览器访问时启动统计进程，空闲十分钟后退出，下次访问再次唤醒。退出 Codex、统计进程意外退出或电脑重新登录后，不需要先向模型发送“打开用量计”。首次唤醒会重新补读历史，面板显示进度。此可选入口由当前用户管理，不需要管理员权限，也不改变 Hooks 的信任状态。
 
-安装后，在本机任意任务的侧边浏览器输入保存的地址即可。登录期间，macOS 只保留 `127.0.0.1` 的监听端口；浏览器访问时才启动统计进程，空闲十分钟后退出，下次访问再次唤醒。退出 Codex、统计进程意外退出或电脑重新登录后，均不需要先向模型发送“打开用量计”。首次唤醒会重新补读历史，面板显示进度。此可选入口由当前用户管理，不需要管理员权限，也不改变 Hooks 的信任状态。
-
-查看或卸载按需入口：
-
-```sh
-python3 "$HOME/plugins/codex-usage-meter/scripts/browser_access.py" status
-python3 "$HOME/plugins/codex-usage-meter/scripts/browser_access.py" uninstall
-```
-
-卸载保留任务记录和面板地址。按需模式下，`meter.py stop` 只结束当前统计进程，后续访问会再次唤醒；要关闭入口请使用上面的 `uninstall`。Windows 保留原有手动启动方式，不执行 macOS 服务管理命令。
+卸载入口保留任务记录和面板地址。按需模式下，结束当前统计进程不会关闭监听入口，后续访问仍会唤醒；要关闭入口请使用 `browser-uninstall`。Windows 保留通过“打开用量计”启动的方式，不执行 macOS 服务管理命令。旧 `personal` 安装继续按原有指南管理，避免重复创建服务。
 
 如果 Codex 应用能联网，但插件的命令行额度查询连接超时，可在确认本机 HTTP 代理端口后，为按需入口指定 `--proxy-http http://127.0.0.1:端口`。只接受不含用户名和密码的本地 HTTP 代理；这项设置只写入本机的服务配置，不修改系统代理，不属于公开源码。额度查询仍使用官方 App Server，认证仍由 Codex 处理。
 
@@ -103,7 +98,7 @@ python3 scripts/meter.py --data-dir ./dev-data stop
 
 Windows 在 PowerShell 中将上述命令的 `python3` 换成 `py -3`。源码预览不需要额外的管理员权限。
 
-停止安装后的默认服务可运行 `python3 scripts/meter.py stop`。停止自动登记或卸载请使用 Codex 正常插件管理；插件不会删除原始任务日志。
+停止当前统计进程可在已加载插件的任务中说“停止用量计当前服务”，技能会定位并执行 `scripts/run.py stop`。停止自动登记或卸载请使用 Codex 正常插件管理；插件不会删除原始任务日志。
 
 ## 数据与权限
 

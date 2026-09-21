@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-meter",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "查看 Codex 每题、当天与订阅周期 Token，区分主子任务，估算 credits 与货币价值",
   "author": {
     "name": "Codex Usage Meter contributors"
@@ -24,5 +24,8 @@
     "usage",
     "tokens",
     "local"
-  ]
+  ],
+  "homepage": "https://github.com/hardwork-xu/codex-usage-meter",
+  "repository": "https://github.com/hardwork-xu/codex-usage-meter",
+  "license": "MIT"
 }

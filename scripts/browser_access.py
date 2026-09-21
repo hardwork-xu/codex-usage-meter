@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -16,9 +17,20 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 
-from platform_support import default_data_dir
+from platform_support import default_data_dir, file_lock
 from service_lifecycle import (DEFAULT_PORT, LAUNCH_AGENT_LABEL, MODE_FILE,
                                activation_marker, build_launch_agent, read_service_mode)
+
+SOURCE_ROOT = Path(__file__).absolute().parent.parent
+RUNTIME_NAME = "browser-runtime"
+RUNTIME_OWNER = ".usage-meter-runtime.json"
+RUNTIME_FILES = (
+    "scripts/meter.py", "scripts/usage_log.py", "scripts/pricing.py", "scripts/periods.py",
+    "scripts/conversations.py", "scripts/platform_support.py", "scripts/rpc_transport.py",
+    "scripts/service_lifecycle.py", "scripts/browser_access.py", "web/index.html",
+    ".codex-plugin/plugin.json",
+)
+_OWNER_BYTES = b'{"owner":"local.codex-usage-meter","format":1}\n'
 
 
 def _require_macos():
@@ -26,10 +38,77 @@ def _require_macos():
         raise RuntimeError("unsupported：按需浏览器访问仅支持 macOS；其他系统保持原有启动方式")
 
 
-def _paths():
+def _paths(folder):
     home = Path.home()
     return (home / "Library" / "LaunchAgents" / (LAUNCH_AGENT_LABEL + ".plist"),
-            home / "plugins" / "codex-usage-meter" / "scripts" / "meter.py")
+            Path(folder) / RUNTIME_NAME / "scripts" / "meter.py")
+
+
+def _directory(path):
+    details = path.lstat()
+    if (not stat.S_ISDIR(details.st_mode) or
+            getattr(details, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+        raise RuntimeError("运行副本需要普通目录，不能是链接或其他对象")
+
+
+def _runtime_payload(root, *, managed=False):
+    """Read an exact code allowlist; never copy hook/MCP settings or user data."""
+    try:
+        _directory(root)
+    except FileNotFoundError:
+        if managed:
+            return None
+        raise RuntimeError("插件运行文件不完整，请重新安装完整源码") from None
+    if managed:
+        if _read_existing(root / RUNTIME_OWNER, 1024) != _OWNER_BYTES:
+            raise RuntimeError("目标运行目录不属于本插件，未覆盖任何文件")
+        allowed = set(RUNTIME_FILES) | {RUNTIME_OWNER}
+        directories = {str(Path(name).parent) for name in RUNTIME_FILES}
+        # A direct Python invocation can create bytecode in this owned directory.
+        directories.add("scripts/__pycache__")
+        modules = {Path(name).stem for name in RUNTIME_FILES if name.startswith("scripts/")}
+        for directory, subdirs, filenames in os.walk(root, followlinks=False):
+            for name in subdirs + filenames:
+                path = Path(directory) / name
+                relative = path.relative_to(root).as_posix()
+                details = path.lstat()
+                if (stat.S_ISLNK(details.st_mode) or getattr(details, "st_file_attributes", 0)
+                        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                    raise RuntimeError("运行副本含链接，未覆盖任何文件")
+                if stat.S_ISDIR(details.st_mode) and relative in directories:
+                    continue
+                bytecode = (path.parent.relative_to(root).as_posix() == "scripts/__pycache__"
+                            and re.fullmatch(r"([a-z_]+)\.cpython-[0-9]+(?:\.opt-[0-9]+)?\.pyc", name))
+                if (not stat.S_ISREG(details.st_mode) or
+                        relative not in allowed and not (bytecode and bytecode[1] in modules)):
+                    raise RuntimeError("运行副本含非预期文件，未覆盖任何文件")
+    payload = {}
+    for name in RUNTIME_FILES:
+        relative = Path(name)
+        _directory(root / relative.parent)
+        raw = _read_existing(root / relative, 2 * 1024 * 1024)
+        if raw is None:
+            raise RuntimeError("插件运行文件不完整，请重新安装完整源码")
+        payload[name] = raw
+    try:
+        manifest = json.loads(payload[".codex-plugin/plugin.json"])
+        if not isinstance(manifest, dict) or manifest.get("name") != "codex-usage-meter":
+            raise ValueError
+    except (ValueError, UnicodeError):
+        raise RuntimeError("运行副本的插件标识无效") from None
+    payload[RUNTIME_OWNER] = _OWNER_BYTES
+    return payload
+
+
+def _stage_runtime(folder, payload):
+    staged = Path(tempfile.mkdtemp(prefix=".browser-runtime-stage-", dir=folder))
+    try:
+        for name, raw in payload.items():
+            _write(staged / name, raw)
+        return staged
+    except BaseException:
+        shutil.rmtree(staged)
+        raise
 
 
 def _target():
@@ -62,7 +141,8 @@ def _read_existing(path, limit=65536):
         original = path.lstat()
     except FileNotFoundError:
         return None
-    if not stat.S_ISREG(original.st_mode) or original.st_size > limit:
+    if (not stat.S_ISREG(original.st_mode) or original.st_size > limit or
+            getattr(original, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
         raise RuntimeError("本插件的本地配置文件类型或大小无效")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     with os.fdopen(os.open(path, flags), "rb") as stream:
@@ -157,9 +237,16 @@ def status(folder):
 def install(folder, *, port=None, proxy_http=None):
     _require_macos()
     folder = Path(folder).expanduser().resolve()
-    plist_path, meter_script = _paths()
-    if not meter_script.is_file():
-        raise RuntimeError("请先通过正常插件安装流程安装用量计，再启用按需访问")
+    with file_lock(folder / "browser-access.lock"):
+        return _install(folder, port=port, proxy_http=proxy_http)
+
+
+def _install(folder, *, port=None, proxy_http=None):
+    plist_path, meter_script = _paths(folder)
+    runtime = folder / RUNTIME_NAME
+    payload = _runtime_payload(SOURCE_ROOT)
+    previous_payload = _runtime_payload(runtime, managed=True)
+    runtime_changed = payload != previous_payload
     previous_plist = _owned_plist(plist_path)
     marker_path = folder / MODE_FILE
     previous_marker = _read_existing(marker_path, 4096)
@@ -188,8 +275,11 @@ def install(folder, *, port=None, proxy_http=None):
     old_job = _job_status()
     if old_job["loaded"] and previous_plist is None:
         raise RuntimeError("本插件服务已载入，但服务文件缺失；请先检查或卸载此服务")
-    if old_job["loaded"] and previous_plist == plist_bytes and old_mode == marker:
+    if old_job["loaded"] and previous_plist == plist_bytes and old_mode == marker and not runtime_changed:
         return {"supported": True, **old_job, "port": chosen_port, "mode": marker["mode"]}
+    staged = _stage_runtime(folder, payload) if runtime_changed else None
+    backup = None
+    runtime_installed = committed = False
     unloaded = bootstrap_attempted = bootstrapped = False
     try:
         if old_job["loaded"]:
@@ -201,11 +291,20 @@ def install(folder, *, port=None, proxy_http=None):
             stop_service(folder)
         _wait_for_port(chosen_port)
         folder.mkdir(parents=True, exist_ok=True)
+        if staged is not None:
+            if previous_payload is not None:
+                backup = Path(tempfile.mkdtemp(prefix=".browser-runtime-backup-", dir=folder))
+                backup.rmdir()
+                os.replace(runtime, backup)
+            os.replace(staged, runtime)
+            staged = None
+            runtime_installed = True
         _write(plist_path, plist_bytes)
         bootstrap_attempted = True
         _checked("bootstrap", _target(), str(plist_path))
         bootstrapped = True
         _write(marker_path, (json.dumps(marker, ensure_ascii=False) + "\n").encode("utf-8"))
+        committed = True
     except Exception:
         recovered = True
         if bootstrap_attempted:
@@ -215,6 +314,11 @@ def install(folder, *, port=None, proxy_http=None):
             except RuntimeError:
                 recovered = False
         try:
+            if runtime_installed:
+                shutil.rmtree(runtime)
+            if backup is not None and backup.exists():
+                os.replace(backup, runtime)
+                backup = None
             _write(plist_path, previous_plist)
             _write(marker_path, previous_marker)
             if unloaded and previous_plist is not None:
@@ -222,6 +326,12 @@ def install(folder, *, port=None, proxy_http=None):
         except (OSError, RuntimeError):
             recovered = False
         raise RuntimeError("按需访问安装未完成；" + ("原配置已恢复，可重试" if recovered else "恢复未完成，请检查本插件服务状态")) from None
+    finally:
+        # A failed recovery retains its private backup for an explicit repair.
+        for temporary in (staged, backup if committed else None):
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    shutil.rmtree(temporary)
     return {"supported": True, "loaded": True, "workerPid": None,
             "port": chosen_port, "mode": marker["mode"]}
 
@@ -229,7 +339,12 @@ def install(folder, *, port=None, proxy_http=None):
 def uninstall(folder):
     _require_macos()
     folder = Path(folder).expanduser().resolve()
-    plist_path, _ = _paths()
+    with file_lock(folder / "browser-access.lock"):
+        return _uninstall(folder)
+
+
+def _uninstall(folder):
+    plist_path, _ = _paths(folder)
     _owned_plist(plist_path)
     _read_existing(folder / MODE_FILE, 4096)
     if _job_status()["loaded"]:

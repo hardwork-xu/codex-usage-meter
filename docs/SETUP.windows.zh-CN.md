@@ -1,5 +1,7 @@
 # Windows 首次安装与启用
 
+新用户推荐 [直接通过 Codex 安装](SETUP.github.zh-CN.md)，无需下载源码运行安装器。下面保留已有 `personal` 安装渠道及手动源码安装流程；两种渠道选择一种即可。
+
 本文适用于 **Windows 原生 Codex + PowerShell + Python 3.10 或更新版本**。安装器使用 Codex 官方插件辅助程序和个人市场，不申请管理员权限，也不调整沙箱、审批或 PowerShell 执行策略。安装成功后，Hooks 仍需要你亲自审阅并信任。
 
 Windows 原生代理与 WSL 是不同运行环境。本文的安装目录、Python 和 Hooks 均属于 Windows；如果代理实际运行在 WSL，请在 WSL 环境单独安装，不混用两边的路径。[官方 Windows 环境说明](https://learn.chatgpt.com/docs/windows/windows-app)

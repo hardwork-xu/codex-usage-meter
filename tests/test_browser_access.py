@@ -1,9 +1,10 @@
 """Synthetic browser-access configuration tests; never call real launchctl."""
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 import io
 import json
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,9 +25,14 @@ class BrowserAccessTests(unittest.TestCase):
         self.folder = self.home / "Data folder"
         self.folder.mkdir(parents=True)
         self.plist = self.home / "Library/LaunchAgents/local.codex-usage-meter.plist"
-        self.script = self.home / "plugins/codex-usage-meter/scripts/meter.py"
-        self.script.parent.mkdir(parents=True)
-        self.script.write_text("# synthetic installed script, never executed\n", encoding="utf-8")
+        self.source = self.home / "Arbitrary 缓存 location" / "plugin-version"
+        repository = Path(__file__).resolve().parents[1]
+        for name in access.RUNTIME_FILES:
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((repository / name).read_bytes())
+        self.runtime = self.folder / access.RUNTIME_NAME
+        self.script = self.runtime / "scripts/meter.py"
         self.endpoint = self.folder / "endpoint.json"
         self.endpoint.write_text(json.dumps({"url": "http://127.0.0.1:51234/", "pid": 123}), encoding="utf-8")
         self.marker = self.folder / MODE_FILE
@@ -39,7 +45,9 @@ class BrowserAccessTests(unittest.TestCase):
                    mock.patch.object(access.os, "getuid", return_value=501, create=True),
                    mock.patch.object(access.subprocess, "run", side_effect=self.fake_launchctl),
                    mock.patch.object(access, "_wait_for_port", side_effect=lambda port: self.events.append(("wait", port))),
-                   mock.patch.object(meter, "stop_service", side_effect=lambda folder: self.events.append(("stop", folder)) or True)]
+                   mock.patch.object(meter, "stop_service", side_effect=lambda folder: self.events.append(("stop", folder)) or True),
+                   mock.patch.object(access, "file_lock", side_effect=lambda path: nullcontext()),
+                   mock.patch.object(access, "SOURCE_ROOT", self.source)]
         self.mocks = [patch.start() for patch in patches]
         for patch in reversed(patches):
             self.addCleanup(patch.stop)
@@ -67,6 +75,8 @@ class BrowserAccessTests(unittest.TestCase):
         return subprocess.CompletedProcess(arguments, 0, "")
 
     def seed_installed(self):
+        for name, raw in access._runtime_payload(self.source).items():
+            access._write(self.runtime / name, raw)
         self.plist.parent.mkdir(parents=True)
         config = build_launch_agent(sys.executable, self.script, self.folder, port=51234)
         self.plist.write_bytes(plistlib.dumps(config, sort_keys=True))
@@ -150,6 +160,8 @@ class BrowserAccessTests(unittest.TestCase):
         self.assertFalse(self.plist.exists())
         self.assertFalse(self.marker.exists())
         self.assertTrue(self.endpoint.exists())
+        self.assertFalse(self.runtime.exists())
+        self.assertEqual(list(self.folder.glob(".browser-runtime-*")), [])
 
     def test_failed_replacement_restores_previous_configuration_and_job(self):
         self.seed_installed()
@@ -172,6 +184,7 @@ class BrowserAccessTests(unittest.TestCase):
         self.assertFalse(self.loaded)
         self.assertFalse(self.plist.exists())
         self.assertFalse(self.marker.exists())
+        self.assertFalse(self.runtime.exists())
 
     def test_busy_port_does_not_overwrite_config_or_stop_foreign_program(self):
         self.mocks[4].side_effect = RuntimeError("synthetic busy port")
@@ -245,6 +258,126 @@ class BrowserAccessTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             access.endpoint_port(self.folder)
         self.assertEqual(self.calls, [])
+
+    def test_runtime_survives_source_cache_removal_without_copying_private_files(self):
+        (self.source / "registry.json").write_text('{"synthetic-private":"do not copy"}', encoding="utf-8")
+        (self.source / ".mcp.json").write_text('{"private-machine-path":"do not copy"}', encoding="utf-8")
+        (self.source / "hooks").mkdir()
+        (self.source / "hooks/hooks.json").write_text("{}", encoding="utf-8")
+        expected_web = (self.source / "web/index.html").read_bytes()
+        access.install(self.folder)
+        shutil.rmtree(self.source)
+        self.assertEqual((self.runtime / "web/index.html").read_bytes(), expected_web)
+        self.assertFalse((self.runtime / "registry.json").exists())
+        self.assertFalse((self.runtime / ".mcp.json").exists())
+        self.assertFalse((self.runtime / "hooks").exists())
+        self.assertNotIn(str(self.source), self.plist.read_text(encoding="utf-8"))
+        # Import the actual copied runtime after the cache disappears. --help
+        # never starts a service, queries an account, or reads task records.
+        child = subprocess.Popen([sys.executable, "-B", str(self.script), "--help"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            output, errors = child.communicate(timeout=15)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+        self.assertEqual(child.returncode, 0, errors.decode("utf-8", errors="replace"))
+        self.assertIn(b"--data-dir", output)
+
+    def test_explicit_reinstall_updates_runtime_at_the_same_address(self):
+        access.install(self.folder)
+        original_plist = self.plist.read_bytes()
+        self.events.clear()
+        updated = (self.source / "web/index.html").read_bytes() + b"\n<!-- synthetic update -->\n"
+        (self.source / "web/index.html").write_bytes(updated)
+        access.install(self.folder)
+        self.assertEqual((self.runtime / "web/index.html").read_bytes(), updated)
+        self.assertEqual(self.plist.read_bytes(), original_plist)
+        self.assertEqual(self.events, [("bootout",), ("wait", 51234), ("bootstrap", True)])
+        self.assertEqual(list(self.folder.glob(".browser-runtime-*")), [])
+
+    def test_failed_updated_runtime_restores_code_and_previous_job(self):
+        access.install(self.folder, proxy_http="http://127.0.0.1:51235/")
+        original = access._runtime_payload(self.runtime, managed=True)
+        old_plist, old_marker = self.plist.read_bytes(), self.marker.read_bytes()
+        (self.source / "scripts/meter.py").write_bytes(b"raise RuntimeError('synthetic replacement')\n")
+        self.fail_bootstrap = True
+        with self.assertRaisesRegex(RuntimeError, "原配置已恢复"):
+            access.install(self.folder)
+        self.assertEqual(access._runtime_payload(self.runtime, managed=True), original)
+        self.assertEqual(self.plist.read_bytes(), old_plist)
+        self.assertEqual(self.marker.read_bytes(), old_marker)
+        self.assertTrue(self.loaded)
+        self.assertEqual(list(self.folder.glob(".browser-runtime-*")), [])
+
+    def test_failed_directory_swap_restores_previous_runtime_before_restarting(self):
+        access.install(self.folder)
+        original = access._runtime_payload(self.runtime, managed=True)
+        (self.source / "web/index.html").write_bytes(b"synthetic update")
+        real_replace = access.os.replace
+        def replace(source, destination):
+            if Path(source).name.startswith(".browser-runtime-stage-") and Path(destination) == self.runtime:
+                raise OSError("synthetic directory replacement failure")
+            return real_replace(source, destination)
+        with mock.patch.object(access.os, "replace", side_effect=replace), self.assertRaisesRegex(RuntimeError, "原配置已恢复"):
+            access.install(self.folder)
+        self.assertEqual(access._runtime_payload(self.runtime, managed=True), original)
+        self.assertTrue(self.loaded)
+        self.assertEqual(list(self.folder.glob(".browser-runtime-*")), [])
+
+    def test_incomplete_source_and_foreign_runtime_are_rejected_before_service_changes(self):
+        missing = self.source / "scripts/pricing.py"
+        original = missing.read_bytes()
+        missing.unlink()
+        with self.assertRaisesRegex(RuntimeError, "不完整"):
+            access.install(self.folder)
+        missing.write_bytes(original)
+        self.runtime.mkdir()
+        note = self.runtime / "unrelated.txt"
+        note.write_text("leave untouched", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "不属于本插件"):
+            access.install(self.folder)
+        self.assertEqual(note.read_text(), "leave untouched")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.events, [])
+
+    def test_unexpected_managed_runtime_file_is_preserved_and_rejected(self):
+        access.install(self.folder)
+        self.calls.clear()
+        self.events.clear()
+        extra = self.runtime / "personal-note.txt"
+        extra.write_text("synthetic private note", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "非预期"):
+            access.install(self.folder)
+        self.assertEqual(extra.read_text(), "synthetic private note")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.events, [])
+
+    def test_source_and_runtime_links_are_rejected_without_following_targets(self):
+        script = self.source / "scripts/pricing.py"
+        original = script.read_bytes()
+        target = self.home / "outside.py"
+        target.write_bytes(original)
+        script.unlink()
+        try:
+            script.symlink_to(target)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows has not granted symlink creation")
+            raise
+        with self.assertRaises(RuntimeError):
+            access.install(self.folder)
+        script.unlink()
+        script.write_bytes(original)
+        outside = self.home / "outside-runtime"
+        outside.mkdir()
+        self.runtime.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, "普通目录"):
+            access.install(self.folder)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.events, [])
 
 
 if __name__ == "__main__":

@@ -81,6 +81,32 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def copy_plugin_source(source: Path, target: Path) -> None:
+    """Copy distributable components only, never the surrounding checkout data."""
+    files = []
+    for name in (".codex-plugin", ".mcp.json", "hooks", "scripts", "skills", "web", "vendor",
+                 "README.md", "LICENSE", "docs", "PUBLIC_RELEASE_CHECKS.md"):
+        component = source / name
+        if component.is_symlink():
+            raise RuntimeError("插件源码中包含符号链接，未复制")
+        if not component.exists():
+            continue
+        candidates = [component, *component.rglob("*")] if component.is_dir() else [component]
+        for path in candidates:
+            if path.is_symlink():
+                raise RuntimeError("插件源码中包含符号链接，未复制")
+            if "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo"):
+                continue
+            if path.is_file():
+                files.append(path)
+            elif not path.is_dir():
+                raise RuntimeError("插件源码中包含非普通文件，未复制")
+    for path in files:
+        destination = target / path.relative_to(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+
+
 def official_skill_scripts() -> Path:
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
     scripts = codex_home / "skills" / ".system" / "plugin-creator" / "scripts"
@@ -138,9 +164,7 @@ def main() -> None:
         sys.executable, "-X", "utf8", str(skill / "create_basic_plugin.py"), NAME,
         "--path", str(target.parent), "--with-marketplace", "--with-skills", "--with-hooks", "--with-mcp",
     ], env=env, check=True)
-    shutil.copytree(ROOT, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns(
-        ".git", ".DS_Store", "__pycache__", "*.pyc", "*.zip", ".venv", ".pytest_cache",
-    ))
+    copy_plugin_source(ROOT, target)
 
     # Materialize paths only in the installed copy. Public .mcp.json stays empty.
     data_dir = default_data_dir()

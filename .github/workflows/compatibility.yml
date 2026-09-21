@@ -29,3 +29,25 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python -m unittest discover -s tests -v
+
+  github-install:
+    name: GitHub install / ${{ matrix.os }}
+    # This verifies the published main branch, not unmerged PR source.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install official Codex CLI
+        run: npm install --global @openai/codex@0.155.1
+      - name: Verify native GitHub installation without login or hook trust
+        run: python tests/check_github_install.py

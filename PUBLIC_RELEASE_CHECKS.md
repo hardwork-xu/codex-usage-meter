@@ -5,7 +5,7 @@ These are reproducible maintainer checks, not evidence of any particular account
 ## Before packaging
 
 1. Review the exact file list. Include plugin source, tests, the local web UI, skill and hook definitions, manifests, the installer, documentation, and licenses. Exclude task logs, runtime JSON, local screenshots, shell history, account output, credentials, development folders, and installed plugin copies.
-2. Keep the source `.mcp.json` as an empty `mcpServers` scaffold. Confirm the installer generates machine-specific MCP configuration only in the installed copy. Do not assume hook environment variables are also expanded in MCP arguments.
+2. Keep the source `.mcp.json` as an empty `mcpServers` scaffold. Native marketplace installs use the bundled skill and `scripts/run.py`; they must not depend on generating MCP configuration. The optional legacy installer generates machine-specific MCP configuration only in its installed copy. Do not assume hook environment variables are also expanded in MCP arguments.
 3. Inspect every outgoing file for personal absolute paths, user names, email addresses, session or task identifiers, copied conversations, raw preferences, and credentials. Synthetic test identifiers, public source URLs, and upstream license notices have different purposes; inspect their context before redacting them.
 4. Keep both the project MIT license and the original PyYAML license. Recheck any newly added dependency before including it.
 
@@ -22,6 +22,10 @@ The suite covers token increments and duplicate snapshots, malformed or incomple
 On Windows PowerShell, run `py -3 -m unittest discover -s tests -v`. The compatibility workflow runs the suite on native Windows and macOS with Python 3.10 and 3.12. Platform checks include real subprocess pipes, Unicode paths, cross-process file locks, isolated HTTP/MCP startup and authenticated shutdown, reuse of the saved address, and failure when the saved port is occupied. Installer tests use temporary scaffolds, never the user's actual marketplace. Review the workflow result for the exact published commit; automated tests do not establish live Codex login or manual hook trust on Windows.
 
 Validate the compatibility manifest with the installed official `plugin-creator` validator. Keep the plugin folder name identical to its manifest name. The installation script runs the same validation during normal setup. Do not alter the validator or suppress its checks.
+
+Check `.agents/plugins/marketplace.json` with Codex's public plugin reader. Its Git root source must resolve to this public repository and expose the released version, skill and five Hooks. `plugin/list` and `plugin/read` do not establish that a user has installed or trusted the plugin. Verify installation from the published Git source when a disposable Codex test environment is available; never modify a working user's hook trust for a packaging test. New-user instructions use normal `codex plugin marketplace add` and `codex plugin add` commands. The generated marketplace is independent of any existing personal install.
+
+The native-entry tests execute the published Hook in a temporary cache path from an unrelated working directory, verify the registered synthetic log reaches the shared data directory, and check that host `PLUGIN_DATA` cannot split Hook and skill statistics. Browser-entry tests verify runtime copying, cache independence, update rollback, and the allowlist that excludes local data and links. No account credentials or model calls are needed.
 
 For a UI check, serve only generated sample data or an empty temporary data directory. Confirm empty, partial, unavailable-price and currency states. If taking a publication screenshot, use visibly synthetic data and inspect the final image before adding it to the release.
 

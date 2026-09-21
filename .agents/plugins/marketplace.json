@@ -1,0 +1,21 @@
+{
+  "name": "codex-usage-meter-community",
+  "interface": {
+    "displayName": "Codex Usage Meter · Community"
+  },
+  "plugins": [
+    {
+      "name": "codex-usage-meter",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/hardwork-xu/codex-usage-meter.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
